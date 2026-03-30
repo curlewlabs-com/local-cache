@@ -52,6 +52,39 @@ The restore/save split is intentional: composite actions have no automatic post-
 On first run: cache miss → install runs → save populates the shared cache.
 On subsequent runs (any runner on the same machine): cache hit → rsync with hard links → near-instant.
 
+### Eliminating the three-step pattern
+
+If you use the same tool in multiple workflows, a [local composite action](https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-composite-action) wrapping restore + install + save collapses it to a single `uses:` line in every caller. Because the install step is *inside* the composite action, the save can be its last step — no explicit save step needed in the calling workflow.
+
+```yaml
+# .github/actions/flutter-setup/action.yml
+inputs:
+  flutter-version: { required: true }
+  cache-dir: { required: true }
+runs:
+  using: composite
+  steps:
+    - uses: curlewlabs-com/local-cache@v1
+      id: cache
+      with:
+        path: ${{ runner.tool_cache }}/flutter
+        key: flutter-${{ inputs.flutter-version }}-stable-${{ runner.os }}-${{ runner.arch }}
+        cache-dir: ${{ inputs.cache-dir }}
+    - uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ inputs.flutter-version }}
+        channel: stable
+        cache: false
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: curlewlabs-com/local-cache/save@v1
+      with:
+        path: ${{ runner.tool_cache }}/flutter
+        key: flutter-${{ inputs.flutter-version }}-stable-${{ runner.os }}-${{ runner.arch }}
+        cache-dir: ${{ inputs.cache-dir }}
+```
+
+Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-version` and `cache-dir`.
+
 ### Fallback keys
 
 ```yaml
