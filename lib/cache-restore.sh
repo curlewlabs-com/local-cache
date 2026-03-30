@@ -41,7 +41,9 @@ hardlink_status() {
 }
 
 append_summary() {
-    [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY" || true
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
+    fi
 }
 
 do_restore() {
