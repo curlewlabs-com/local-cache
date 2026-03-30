@@ -30,9 +30,12 @@ sanitize_key() {
 # stat syntax differs between Linux (-c) and macOS (-f).
 hardlink_status() {
     target_dir="$1"
-    sample=$(find "$target_dir" -type f | head -1 2>/dev/null || true)
+    sample=$(find "$target_dir" -type f 2>/dev/null | head -1 || true)
     [ -z "$sample" ] && return
     nlink=$(stat -c '%h' "$sample" 2>/dev/null || stat -f '%l' "$sample" 2>/dev/null || true)
+    # 2>/dev/null guards against non-numeric stat output (e.g. empty string) which
+    # would make [ -gt ] a syntax error on some shells; the redirect silences the
+    # shell-level error message without hiding the actual stat failure.
     if [ "${nlink:-0}" -gt 1 ] 2>/dev/null; then
         printf '::debug::Hard links confirmed (nlink=%s) — restore was zero-copy\n' "$nlink"
     else

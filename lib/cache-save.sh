@@ -63,7 +63,7 @@ fi
 printf '%s' "$$" > "$lock_dir/pid"
 
 release_lock() {
-    rmdir "$lock_dir" 2>/dev/null || true
+    rm -rf "$lock_dir" 2>/dev/null || true
 }
 trap release_lock EXIT INT TERM
 
@@ -91,9 +91,12 @@ trap release_lock EXIT INT TERM
 # Verify hard links are available by checking the link count on a sample file.
 # nlink > 1 means future restores will be zero-copy; nlink = 1 means rsync
 # will fall back to a full copy (cross-filesystem or no hardlink support).
-sample=$(find "${entries_dir}/${safe_key}" -type f | head -1 2>/dev/null || true)
+sample=$(find "${entries_dir}/${safe_key}" -type f 2>/dev/null | head -1 || true)
 if [ -n "$sample" ]; then
     nlink=$(stat -c '%h' "$sample" 2>/dev/null || stat -f '%l' "$sample" 2>/dev/null || true)
+    # 2>/dev/null guards against non-numeric stat output (e.g. empty string) which
+    # would make [ -gt ] a syntax error on some shells; || true already handles that,
+    # but the redirect silences the shell-level error message cleanly.
     if [ "${nlink:-0}" -gt 1 ] 2>/dev/null; then
         printf '::debug::Hard links available (nlink=%s) — future restores will be zero-copy\n' "$nlink"
     else

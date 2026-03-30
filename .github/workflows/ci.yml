@@ -54,6 +54,8 @@ jobs:
         run: |
           [ "${{ steps.restore-exact.outputs.cache-hit }}" = "true" ] \
             || (echo "Expected cache-hit=true, got: ${{ steps.restore-exact.outputs.cache-hit }}" && exit 1)
+          [ "${{ steps.restore-exact.outputs.cache-matched-key }}" = "test-exact-key" ] \
+            || (echo "Expected cache-matched-key=test-exact-key, got: ${{ steps.restore-exact.outputs.cache-matched-key }}" && exit 1)
           diff /tmp/local-cache/entries/test-exact-key /tmp/test-restore \
             || (echo "Restored content does not match" && exit 1)
           echo "Exact restore: OK"
@@ -72,6 +74,8 @@ jobs:
         run: |
           [ "${{ steps.restore-prefix.outputs.cache-hit }}" = "false" ] \
             || (echo "Expected cache-hit=false for prefix match, got: ${{ steps.restore-prefix.outputs.cache-hit }}" && exit 1)
+          [ -n "${{ steps.restore-prefix.outputs.cache-matched-key }}" ] \
+            || (echo "Expected non-empty cache-matched-key for prefix match" && exit 1)
           diff /tmp/local-cache/entries/test-exact-key /tmp/test-restore-prefix \
             || (echo "Prefix-restored content does not match" && exit 1)
           echo "Prefix restore: OK"
@@ -88,6 +92,8 @@ jobs:
         run: |
           [ "${{ steps.restore-miss.outputs.cache-hit }}" = "false" ] \
             || (echo "Expected cache-hit=false for miss, got: ${{ steps.restore-miss.outputs.cache-hit }}" && exit 1)
+          [ -z "${{ steps.restore-miss.outputs.cache-matched-key }}" ] \
+            || (echo "Expected empty cache-matched-key on miss, got: ${{ steps.restore-miss.outputs.cache-matched-key }}" && exit 1)
           [ ! -d /tmp/test-restore-miss ] \
             || (echo "Expected path to not exist on miss" && exit 1)
           echo "Cache miss: OK"
@@ -149,3 +155,35 @@ jobs:
           diff /tmp/local-cache/entries/prefix-b-v1 /tmp/test-restore-multi-prefix \
             || (echo "Multi-prefix restored content does not match" && exit 1)
           echo "Multi-prefix restore: OK"
+
+      - name: Set up first-prefix-wins fixture
+        run: |
+          mkdir -p /tmp/test-prefix-a
+          echo "from-prefix-a" > /tmp/test-prefix-a/e.txt
+
+      - name: Save first-prefix-wins fixture under prefix-a
+        uses: ./save
+        with:
+          path: /tmp/test-prefix-a
+          key: prefix-a-v1
+          cache-dir: /tmp/local-cache
+
+      - name: Restore with multiple restore-keys (both match, first wins)
+        id: restore-prefix-order
+        uses: ./
+        with:
+          path: /tmp/test-restore-prefix-order
+          key: no-match-at-all-2
+          restore-keys: |
+            prefix-a-
+            prefix-b-
+          cache-dir: /tmp/local-cache
+
+      - name: Verify first prefix wins when both match
+        run: |
+          [ "${{ steps.restore-prefix-order.outputs.cache-hit }}" = "false" ] \
+            || (echo "Expected cache-hit=false for prefix match" && exit 1)
+          # prefix-a- is listed first and has an entry; it must win over prefix-b-
+          diff /tmp/local-cache/entries/prefix-a-v1 /tmp/test-restore-prefix-order \
+            || (echo "Expected prefix-a-v1 to win but content does not match" && exit 1)
+          echo "First-prefix-wins: OK"
