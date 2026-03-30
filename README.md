@@ -123,6 +123,12 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-vers
 | `key` | Yes | Cache key |
 | `cache-dir` | Yes | Must match the restore step |
 
+## When not to use this
+
+If the tool respects an environment variable that controls where it stores its cache or installation (e.g. `PUB_CACHE`, `CARGO_HOME`, `BUN_INSTALL_CACHE_DIR`, `GRADLE_USER_HOME`), point that variable at a shared persistent directory instead. Every runner on the machine will use the same live directory with zero copying overhead — no restore or save step needed.
+
+Use `local-cache` when you cannot control where a tool installs itself. The Flutter SDK (`subosito/flutter-action` installs into `runner.tool_cache`, which is per-runner) and the Cargo registry (`~/.cargo`, which is per-user home) are typical examples: they do not natively share state across runners on the same machine.
+
 ## Limitations
 
 - **No TTL or eviction.** Cache entries accumulate until manually deleted. For artifacts that change infrequently (e.g. Flutter SDK, updated monthly) this is fine. Clean up with `rm -rf cache-dir/entries/`.
