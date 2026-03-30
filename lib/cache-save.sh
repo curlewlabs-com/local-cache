@@ -19,19 +19,25 @@ cache_dir="$3"
 entries_dir="${cache_dir}/entries"
 locks_dir="${cache_dir}/.locks"
 
+start_time=$(date +%s)
+
 sanitize_key() {
     printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '_'
+}
+
+append_summary() {
+    [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY" || true
 }
 
 safe_key=$(sanitize_key "$cache_key")
 
 if [ ! -d "$path_to_cache" ]; then
-    printf 'Source path does not exist, skipping save: %s\n' "$path_to_cache"
+    printf '::notice::Cache save skipped — source path does not exist: %s\n' "$path_to_cache"
     exit 0
 fi
 
 if [ -d "${entries_dir}/${safe_key}" ]; then
-    printf 'Cache entry already exists, skipping save: %s\n' "$cache_key"
+    printf '::debug::Cache entry already exists, skipping save: %s\n' "$cache_key"
     exit 0
 fi
 
@@ -44,10 +50,11 @@ if ! mkdir "$lock_dir" 2>/dev/null; then
     # stale lock that would otherwise block saves for this key forever.
     stale_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
     if [ -n "$stale_pid" ] && ! kill -0 "$stale_pid" 2>/dev/null; then
+        printf '::debug::Removing stale lock (PID %s no longer running)\n' "$stale_pid"
         rm -rf "$lock_dir"
-        mkdir "$lock_dir" 2>/dev/null || { printf 'Lock contention, skipping: %s\n' "$cache_key"; exit 0; }
+        mkdir "$lock_dir" 2>/dev/null || { printf '::debug::Lock contention after stale recovery, skipping: %s\n' "$cache_key"; exit 0; }
     else
-        printf 'Another process is saving this key, skipping: %s\n' "$cache_key"
+        printf '::debug::Another process is saving this key, skipping: %s\n' "$cache_key"
         exit 0
     fi
 fi
@@ -60,11 +67,10 @@ trap release_lock EXIT INT TERM
 
 # Re-check after acquiring lock (another writer may have finished while we waited).
 if [ -d "${entries_dir}/${safe_key}" ]; then
-    printf 'Cache entry appeared while acquiring lock, skipping save: %s\n' "$cache_key"
+    printf '::debug::Cache entry appeared while acquiring lock, skipping save: %s\n' "$cache_key"
     exit 0
 fi
 
-# Sync to a temp entry, then rename atomically into place.
 mkdir -p "$entries_dir"
 tmp_entry="${entries_dir}/.tmp-${safe_key}-$$"
 
@@ -74,10 +80,28 @@ cleanup_tmp() {
 }
 trap cleanup_tmp EXIT INT TERM
 
+printf '::debug::Saving to local cache: %s\n' "$cache_key"
 rsync -a "${path_to_cache}/" "${tmp_entry}/"
 mv "$tmp_entry" "${entries_dir}/${safe_key}"
 
 trap release_lock EXIT INT TERM
 
+# Verify hard links are available by checking the link count on a sample file.
+# nlink > 1 means future restores will be zero-copy; nlink = 1 means rsync
+# will fall back to a full copy (cross-filesystem or no hardlink support).
+sample=$(find "${entries_dir}/${safe_key}" -type f | head -1 2>/dev/null || true)
+if [ -n "$sample" ]; then
+    nlink=$(stat -c '%h' "$sample" 2>/dev/null || stat -f '%l' "$sample" 2>/dev/null || true)
+    if [ "${nlink:-0}" -gt 1 ] 2>/dev/null; then
+        printf '::debug::Hard links available (nlink=%s) — future restores will be zero-copy\n' "$nlink"
+    else
+        printf '::debug::Hard links not available — future restores will use full copy\n'
+    fi
+fi
+
+elapsed=$(( $(date +%s) - start_time ))
 size=$(du -sh "${entries_dir}/${safe_key}" 2>/dev/null | cut -f1 || printf '?')
-printf 'Saved cache entry: %s (%s)\n' "$cache_key" "$size"
+file_count=$(find "${entries_dir}/${safe_key}" -type f | wc -l | tr -d ' ')
+printf '::notice::Cache saved: %s (%s files, %s in %ds)\n' "$cache_key" "$file_count" "$size" "$elapsed"
+printf '::debug::Entry path: %s\n' "${entries_dir}/${safe_key}"
+append_summary "- **local-cache** \`${cache_key}\` → 💾 Saved (${size}, ${elapsed}s)"
