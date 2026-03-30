@@ -46,9 +46,14 @@ runs:
     - name: Restore cache
       id: restore
       shell: sh
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_KEY: ${{ inputs.key }}
+        INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
+        INPUT_RESTORE_KEYS: ${{ inputs.restore-keys }}
       run: |
         sh "${{ github.action_path }}/lib/cache-restore.sh" \
-          "${{ inputs.path }}" \
-          "${{ inputs.key }}" \
-          "${{ inputs.cache-dir }}" \
-          "${{ inputs.restore-keys }}"
+          "$INPUT_PATH" \
+          "$INPUT_KEY" \
+          "$INPUT_CACHE_DIR" \
+          "$INPUT_RESTORE_KEYS"

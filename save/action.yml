@@ -26,8 +26,12 @@ runs:
   steps:
     - name: Save cache
       shell: sh
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_KEY: ${{ inputs.key }}
+        INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
       run: |
         sh "${{ github.action_path }}/../lib/cache-save.sh" \
-          "${{ inputs.path }}" \
-          "${{ inputs.key }}" \
-          "${{ inputs.cache-dir }}"
+          "$INPUT_PATH" \
+          "$INPUT_KEY" \
+          "$INPUT_CACHE_DIR"
