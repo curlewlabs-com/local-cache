@@ -21,7 +21,7 @@ restore_keys="${4:-}"
 # GitHub Actions does not expand ~ in input values — do it here so callers
 # can write path: ~/.cargo/registry without a preceding resolution step.
 case "$path_to_cache" in
-    [~]/*) path_to_cache="${HOME}/${path_to_cache#~/}" ;;
+    [~]/*) path_to_cache="${HOME}${path_to_cache#?}" ;;
     [~])   path_to_cache="${HOME}" ;;
 esac
 
