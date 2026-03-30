@@ -60,9 +60,10 @@ if [ -n "$restore_keys" ]; then
         [ -z "$prefix" ] && continue
         [ -n "$found_match" ] && break
         safe_prefix=$(sanitize_key "$prefix")
-        # ls -dt with a glob sorts by mtime without grep. SC2012 is suppressed
-        # because keys are sanitized to [a-zA-Z0-9._-] so filenames are safe.
-        # shellcheck disable=SC2012
+        # ls -dt with a glob sorts by mtime without grep. SC2012: keys are
+        # sanitized to [a-zA-Z0-9._-] so filenames are safe. SC2015: the
+        # || true applies only to cd failing; ls|head always succeeds.
+        # shellcheck disable=SC2012,SC2015
         match=$(cd "${entries_dir}" 2>/dev/null && ls -dt "${safe_prefix}"* 2>/dev/null | head -1 || true)
         if [ -n "$match" ]; then
             found_match="$match"
