@@ -10,7 +10,7 @@ A drop-in replacement for [`actions/cache`](https://github.com/actions/cache) th
 
 Self-hosted runners on the same physical machine make this worse: each runner operates independently, so if you have four runners and a warm cloud cache, you still download the artifact four times per run.
 
-With `local-cache`, the artifact lives on the machine's local disk. The first runner to miss downloads and saves it once. Every subsequent runner — including all four concurrent ones — restores via `rsync --link-dest`, which creates hard links rather than copying bytes. A 1.8 GB Flutter SDK restores in under a second.
+With `local-cache`, the artifact lives on the machine's local disk. On the first run after a cache miss, all concurrent runners download independently (there is no coordination to make them wait for each other). One runner saves the entry; the others skip the save cleanly via a `mkdir`-based advisory lock. On every subsequent run — including all four concurrent ones — each runner restores via `rsync --link-dest`, which creates hard links rather than copying bytes. A 1.8 GB Flutter SDK restores in under a second. The download cost is paid once per machine, not once per run.
 
 ## How it works
 
