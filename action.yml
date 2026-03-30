@@ -1,0 +1,54 @@
+name: 'Local Cache'
+description: >-
+  Restore a cached directory from local disk on self-hosted runners.
+  Use curlewlabs-com/local-cache/save@v1 after your install step to populate
+  the cache on first run. A drop-in replacement for actions/cache that reads
+  from a shared local directory instead of GitHub's cloud cache servers,
+  enabling multiple runners on the same machine to share a single cache.
+author: 'curlewlabs-com'
+branding:
+  icon: 'hard-drive'
+  color: 'blue'
+
+inputs:
+  path:
+    description: 'Path to restore the cached directory to.'
+    required: true
+  key:
+    description: 'Exact cache key to look up.'
+    required: true
+  restore-keys:
+    description: >-
+      Newline-separated list of key prefixes for fallback matching.
+      The most recently modified matching entry wins.
+    required: false
+    default: ''
+  cache-dir:
+    description: >-
+      Local directory where cache entries are stored. Must be a persistent
+      path shared across all runners on the same machine (e.g. a path outside
+      the per-workspace _work directory).
+    required: true
+
+outputs:
+  cache-hit:
+    description: "'true' if an exact key match was found, 'false' otherwise."
+    value: ${{ steps.restore.outputs.cache-hit }}
+  cache-matched-key:
+    description: >-
+      The key that was actually restored. Equal to 'key' on an exact hit;
+      the matched entry name on a prefix hit; empty on a miss.
+    value: ${{ steps.restore.outputs.cache-matched-key }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Restore cache
+      id: restore
+      shell: sh
+      run: |
+        sh "${{ github.action_path }}/lib/cache-restore.sh" \
+          "${{ inputs.path }}" \
+          "${{ inputs.key }}" \
+          "${{ inputs.cache-dir }}" \
+          "${{ inputs.restore-keys }}"

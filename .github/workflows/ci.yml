@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Shellcheck
+        run: shellcheck lib/cache-restore.sh lib/cache-save.sh
+
+  integration-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Create test fixture
+        run: |
+          mkdir -p /tmp/test-source
+          echo "hello" > /tmp/test-source/a.txt
+          echo "world" > /tmp/test-source/b.txt
+          mkdir -p /tmp/test-source/sub
+          echo "nested" > /tmp/test-source/sub/c.txt
+
+      - name: Save to local cache
+        uses: ./save
+        with:
+          path: /tmp/test-source
+          key: test-exact-key
+          cache-dir: /tmp/local-cache
+
+      - name: Verify entry was created
+        run: |
+          test -d /tmp/local-cache/entries/test-exact-key || (echo "Entry not found" && exit 1)
+          echo "Entry exists: OK"
+
+      - name: Delete source to prove restore works
+        run: rm -rf /tmp/test-source
+
+      - name: Restore from local cache (exact)
+        id: restore-exact
+        uses: ./
+        with:
+          path: /tmp/test-restore
+          key: test-exact-key
+          cache-dir: /tmp/local-cache
+
+      - name: Verify exact restore
+        run: |
+          [ "${{ steps.restore-exact.outputs.cache-hit }}" = "true" ] \
+            || (echo "Expected cache-hit=true, got: ${{ steps.restore-exact.outputs.cache-hit }}" && exit 1)
+          diff /tmp/local-cache/entries/test-exact-key /tmp/test-restore \
+            || (echo "Restored content does not match" && exit 1)
+          echo "Exact restore: OK"
+
+      - name: Restore with prefix key (miss on exact, hit on prefix)
+        id: restore-prefix
+        uses: ./
+        with:
+          path: /tmp/test-restore-prefix
+          key: test-exact-key-v2
+          restore-keys: |
+            test-exact-key
+          cache-dir: /tmp/local-cache
+
+      - name: Verify prefix restore
+        run: |
+          [ "${{ steps.restore-prefix.outputs.cache-hit }}" = "false" ] \
+            || (echo "Expected cache-hit=false for prefix match, got: ${{ steps.restore-prefix.outputs.cache-hit }}" && exit 1)
+          diff /tmp/local-cache/entries/test-exact-key /tmp/test-restore-prefix \
+            || (echo "Prefix-restored content does not match" && exit 1)
+          echo "Prefix restore: OK"
+
+      - name: Restore with no match
+        id: restore-miss
+        uses: ./
+        with:
+          path: /tmp/test-restore-miss
+          key: no-such-key
+          cache-dir: /tmp/local-cache
+
+      - name: Verify cache miss
+        run: |
+          [ "${{ steps.restore-miss.outputs.cache-hit }}" = "false" ] \
+            || (echo "Expected cache-hit=false for miss, got: ${{ steps.restore-miss.outputs.cache-hit }}" && exit 1)
+          [ ! -d /tmp/test-restore-miss ] \
+            || (echo "Expected path to not exist on miss" && exit 1)
+          echo "Cache miss: OK"
+
+      - name: Second save with same key is a no-op
+        uses: ./save
+        with:
+          path: /tmp/test-restore
+          key: test-exact-key
+          cache-dir: /tmp/local-cache
+
+      - name: Verify idempotent save
+        run: |
+          count=$(ls /tmp/local-cache/entries/ | wc -l | tr -d ' ')
+          [ "$count" = "1" ] \
+            || (echo "Expected 1 cache entry, found: $count" && exit 1)
+          echo "Idempotent save: OK"

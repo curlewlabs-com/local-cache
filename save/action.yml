@@ -1,0 +1,33 @@
+name: 'Local Cache (Save)'
+description: >-
+  Save a directory to the local disk cache on self-hosted runners.
+  Call this after your install step, conditional on a cache miss from
+  curlewlabs-com/local-cache@v1 (the restore step).
+author: 'curlewlabs-com'
+branding:
+  icon: 'hard-drive'
+  color: 'blue'
+
+inputs:
+  path:
+    description: 'Path to the directory to save.'
+    required: true
+  key:
+    description: 'Cache key to save under. Must match the key used in the restore step.'
+    required: true
+  cache-dir:
+    description: >-
+      Local directory where cache entries are stored. Must match the value
+      used in the restore step.
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Save cache
+      shell: sh
+      run: |
+        sh "${{ github.action_path }}/../lib/cache-save.sh" \
+          "${{ inputs.path }}" \
+          "${{ inputs.key }}" \
+          "${{ inputs.cache-dir }}"
