@@ -18,11 +18,22 @@ cache_key="$2"
 cache_dir="$3"
 restore_keys="${4:-}"
 
+if [ -z "$path_to_cache" ] || [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
+    printf '::error::cache-restore: path, key, and cache-dir must not be empty\n'
+    exit 1
+fi
+
+# GITHUB_OUTPUT must exist before any output is written. Outside Actions it is
+# unset; a missing path with set -e would abort the script on the first write.
+if [ -z "${GITHUB_OUTPUT:-}" ]; then
+    GITHUB_OUTPUT=$(mktemp)
+    printf '::debug::GITHUB_OUTPUT not set, writing outputs to temp file %s\n' "$GITHUB_OUTPUT"
+fi
+
 entries_dir="${cache_dir}/entries"
 
 start_time=$(date +%s)
 
-# Replace characters that are not safe in directory names with underscores.
 sanitize_key() {
     printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '_'
 }

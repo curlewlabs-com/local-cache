@@ -16,6 +16,11 @@ path_to_cache="$1"
 cache_key="$2"
 cache_dir="$3"
 
+if [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
+    printf '::error::cache-save: key and cache-dir must not be empty\n'
+    exit 1
+fi
+
 entries_dir="${cache_dir}/entries"
 locks_dir="${cache_dir}/.locks"
 

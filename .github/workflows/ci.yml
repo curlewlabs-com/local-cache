@@ -19,6 +19,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Restore against non-existent cache dir (cold start)
+        id: restore-cold
+        uses: ./
+        with:
+          path: /tmp/test-cold-restore
+          key: any-key
+          cache-dir: /tmp/nonexistent-cache-dir
+
+      - name: Verify cold start exits cleanly with miss
+        run: |
+          [ "${{ steps.restore-cold.outputs.cache-hit }}" = "false" ] \
+            || (echo "Expected cache-hit=false on cold start, got: ${{ steps.restore-cold.outputs.cache-hit }}" && exit 1)
+          [ ! -d /tmp/test-cold-restore ] \
+            || (echo "Expected path to not exist on cold-start miss" && exit 1)
+          echo "Cold start restore: OK"
+
       - name: Create test fixture
         run: |
           mkdir -p /tmp/test-source
