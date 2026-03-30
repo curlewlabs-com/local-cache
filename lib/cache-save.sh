@@ -16,8 +16,8 @@ path_to_cache="$1"
 cache_key="$2"
 cache_dir="$3"
 
-if [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
-    printf '::error::cache-save: key and cache-dir must not be empty\n'
+if [ -z "$path_to_cache" ] || [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
+    printf '::error::cache-save: path, key, and cache-dir must not be empty\n'
     exit 1
 fi
 
@@ -37,6 +37,11 @@ append_summary() {
 }
 
 safe_key=$(sanitize_key "$cache_key")
+# Reject keys that sanitize to "." or ".." — these would resolve to the entries
+# directory itself or its parent rather than a named entry.
+case "$safe_key" in
+    .|..) printf '::error::cache-save: key must not be "." or ".."\n'; exit 1 ;;
+esac
 
 if [ ! -d "$path_to_cache" ]; then
     printf '::notice::Cache save skipped — source path does not exist: %s\n' "$path_to_cache"

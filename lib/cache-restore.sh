@@ -85,6 +85,11 @@ do_restore() {
 }
 
 safe_key=$(sanitize_key "$cache_key")
+# Reject keys that sanitize to "." or ".." — these resolve to the entries directory
+# itself or its parent, causing rsync to leak all cached entries.
+case "$safe_key" in
+    .|..) printf '::error::cache-restore: key must not be "." or ".."\n'; exit 1 ;;
+esac
 
 entry_count=$(find "${entries_dir}/" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ' || printf '0')
 printf '::debug::Checking local cache — key: %s, entries: %s\n' "$cache_key" "$entry_count"
@@ -105,8 +110,14 @@ if [ -n "$restore_keys" ]; then
         # ls -dt with a glob sorts by mtime without grep. SC2012: keys are
         # sanitized to [a-zA-Z0-9._-] so filenames are safe. SC2015: the
         # || true applies only to cd failing; ls|head always succeeds.
+        # -- prevents keys starting with "-" from being interpreted as ls flags.
         # shellcheck disable=SC2012,SC2015
-        match=$(cd "${entries_dir}" 2>/dev/null && ls -dt "${safe_prefix}"* 2>/dev/null | head -1 || true)
+        match=$(cd "${entries_dir}" 2>/dev/null && ls -dt -- "${safe_prefix}"* 2>/dev/null | head -1 || true)
+        # Reject staging dirs (.tmp-*) and dot-traversal paths (., ..) —
+        # a prefix starting with "." could match in-progress temp entries.
+        case "$match" in
+            .|..|.tmp-*) match="" ;;
+        esac
         if [ -n "$match" ]; then
             found_match="$match"
         fi

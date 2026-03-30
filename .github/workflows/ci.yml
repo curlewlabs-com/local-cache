@@ -203,3 +203,88 @@ jobs:
           diff /tmp/local-cache/entries/prefix-a-v1 /tmp/test-restore-prefix-order \
             || (echo "Expected prefix-a-v1 to win but content does not match" && exit 1)
           echo "First-prefix-wins: OK"
+
+      - name: Set up key-sanitization fixture
+        run: |
+          mkdir -p /tmp/test-special-key
+          echo "special" > /tmp/test-special-key/f.txt
+
+      - name: Save with key containing special characters
+        uses: ./save
+        with:
+          path: /tmp/test-special-key
+          key: "my/special:key@v1"
+          cache-dir: /tmp/local-cache
+
+      - name: Verify sanitized entry name on disk
+        run: |
+          # "/" ":" "@" must all become "_"; the on-disk name is the sanitized form
+          [ -d "/tmp/local-cache/entries/my_special_key_v1" ] \
+            || (echo "Expected sanitized entry my_special_key_v1 not found" && exit 1)
+          echo "Key sanitization: OK"
+
+      - name: Restore with sanitized key (exact hit)
+        id: restore-sanitized
+        uses: ./
+        with:
+          path: /tmp/test-restore-sanitized
+          key: "my/special:key@v1"
+          cache-dir: /tmp/local-cache
+
+      - name: Verify sanitized key restores correctly
+        run: |
+          [ "${{ steps.restore-sanitized.outputs.cache-hit }}" = "true" ] \
+            || (echo "Expected cache-hit=true for sanitized key, got: ${{ steps.restore-sanitized.outputs.cache-hit }}" && exit 1)
+          diff /tmp/local-cache/entries/my_special_key_v1 /tmp/test-restore-sanitized \
+            || (echo "Sanitized-key restore content mismatch" && exit 1)
+          echo "Sanitized key restore: OK"
+
+      - name: Dot-key restore is rejected
+        id: restore-dot
+        continue-on-error: true
+        uses: ./
+        with:
+          path: /tmp/test-dot-restore
+          key: "."
+          cache-dir: /tmp/local-cache
+
+      - name: Verify dot-key was rejected
+        run: |
+          [ "${{ steps.restore-dot.outcome }}" = "failure" ] \
+            || (echo "Expected dot-key restore to fail but it succeeded" && exit 1)
+          echo "Dot-key restore rejection: OK"
+
+      - name: Double-dot key restore is rejected
+        id: restore-dotdot
+        continue-on-error: true
+        uses: ./
+        with:
+          path: /tmp/test-dotdot-restore
+          key: ".."
+          cache-dir: /tmp/local-cache
+
+      - name: Verify double-dot key was rejected
+        run: |
+          [ "${{ steps.restore-dotdot.outcome }}" = "failure" ] \
+            || (echo "Expected .. key restore to fail but it succeeded" && exit 1)
+          echo "Double-dot key restore rejection: OK"
+
+      - name: Dash-prefix restore-key is handled safely
+        id: restore-dash-prefix
+        uses: ./
+        with:
+          path: /tmp/test-dash-prefix
+          key: no-match-dash
+          restore-keys: |
+            -rf
+          cache-dir: /tmp/local-cache
+
+      - name: Verify dash restore-key produced a clean miss
+        run: |
+          [ "${{ steps.restore-dash-prefix.outputs.cache-hit }}" = "false" ] \
+            || (echo "Expected cache-hit=false for dash prefix, got: ${{ steps.restore-dash-prefix.outputs.cache-hit }}" && exit 1)
+          [ -z "${{ steps.restore-dash-prefix.outputs.cache-matched-key }}" ] \
+            || (echo "Expected empty cache-matched-key for dash prefix miss" && exit 1)
+          [ ! -d /tmp/test-dash-prefix ] \
+            || (echo "Expected path to not exist on dash prefix miss" && exit 1)
+          echo "Dash prefix safety: OK"
