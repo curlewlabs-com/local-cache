@@ -288,3 +288,37 @@ jobs:
           [ ! -d /tmp/test-dash-prefix ] \
             || (echo "Expected path to not exist on dash prefix miss" && exit 1)
           echo "Dash prefix safety: OK"
+
+      - name: Set up tilde-path fixture
+        run: |
+          mkdir -p ~/test-tilde-save
+          echo "tilde" > ~/test-tilde-save/g.txt
+
+      - name: Save with tilde path
+        uses: ./save
+        with:
+          path: ~/test-tilde-save
+          key: tilde-path-key
+          cache-dir: /tmp/local-cache
+
+      - name: Verify tilde-path entry was created
+        run: |
+          test -d /tmp/local-cache/entries/tilde-path-key \
+            || (echo "Expected entry for tilde-path-key not found" && exit 1)
+          echo "Tilde path save: OK"
+
+      - name: Restore with tilde path
+        id: restore-tilde
+        uses: ./
+        with:
+          path: ~/test-tilde-restore
+          key: tilde-path-key
+          cache-dir: /tmp/local-cache
+
+      - name: Verify tilde-path restore
+        run: |
+          [ "${{ steps.restore-tilde.outputs.cache-hit }}" = "true" ] \
+            || (echo "Expected cache-hit=true for tilde path, got: ${{ steps.restore-tilde.outputs.cache-hit }}" && exit 1)
+          diff ~/test-tilde-save ~/test-tilde-restore \
+            || (echo "Tilde-path restored content does not match" && exit 1)
+          echo "Tilde path restore: OK"

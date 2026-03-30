@@ -18,6 +18,13 @@ cache_key="$2"
 cache_dir="$3"
 restore_keys="${4:-}"
 
+# GitHub Actions does not expand ~ in input values — do it here so callers
+# can write path: ~/.cargo/registry without a preceding resolution step.
+case "$path_to_cache" in
+    ~/*)  path_to_cache="${HOME}/${path_to_cache#~/}" ;;
+    ~)    path_to_cache="${HOME}" ;;
+esac
+
 if [ -z "$path_to_cache" ] || [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
     printf '::error::cache-restore: path, key, and cache-dir must not be empty\n'
     exit 1
