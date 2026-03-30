@@ -43,14 +43,12 @@ do_restore() {
 
 safe_key=$(sanitize_key "$cache_key")
 
-# Try exact match first.
 if [ -d "${entries_dir}/${safe_key}" ]; then
     printf 'Cache hit (exact): %s\n' "$cache_key"
     do_restore "${entries_dir}/${safe_key}" "$cache_key" "true"
     exit 0
 fi
 
-# Try restore-keys prefix matching. Most recently modified matching entry wins.
 if [ -n "$restore_keys" ]; then
     found_match=""
     found_prefix=""
@@ -74,6 +72,9 @@ if [ -n "$restore_keys" ]; then
 
     if [ -n "$found_match" ]; then
         printf "Cache hit (prefix '%s'): %s\n" "$found_prefix" "$found_match"
+        # matched_key is the sanitized directory name, not the original key
+        # with special characters — the original is not recoverable after
+        # sanitization. Callers should treat this as an opaque identifier.
         do_restore "${entries_dir}/${found_match}" "$found_match" "false"
         exit 0
     fi

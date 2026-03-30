@@ -5,8 +5,11 @@
 #
 # Uses an atomic rename (rsync to temp dir, then mv) so concurrent readers
 # never observe a partial cache entry. Uses mkdir-based advisory locking
-# (POSIX-atomic on all filesystems) so concurrent writers are safe: the
-# second writer simply skips rather than corrupting the entry.
+# (POSIX-atomic on all filesystems) so concurrent writers are safe.
+#
+# Stale lock recovery: if the lock-holder PID is no longer alive (e.g. killed
+# by OOM killer or machine reboot), the lock is cleared and acquisition is
+# retried once rather than skipping the save permanently.
 set -e
 
 path_to_cache="$1"
@@ -22,26 +25,33 @@ sanitize_key() {
 
 safe_key=$(sanitize_key "$cache_key")
 
-# Nothing to save if the source path does not exist.
 if [ ! -d "$path_to_cache" ]; then
     printf 'Source path does not exist, skipping save: %s\n' "$path_to_cache"
     exit 0
 fi
 
-# Entry already exists — nothing to do.
 if [ -d "${entries_dir}/${safe_key}" ]; then
     printf 'Cache entry already exists, skipping save: %s\n' "$cache_key"
     exit 0
 fi
 
-# Acquire advisory lock. mkdir is atomic on POSIX filesystems.
-# A second writer will see the mkdir fail and exit cleanly.
 mkdir -p "$locks_dir"
 lock_dir="${locks_dir}/${safe_key}.lock"
+
+# mkdir is atomic on POSIX filesystems so concurrent runners cannot both win.
 if ! mkdir "$lock_dir" 2>/dev/null; then
-    printf 'Another process is saving this key, skipping: %s\n' "$cache_key"
-    exit 0
+    # Check if the lock-holder is still alive. A SIGKILL or reboot leaves a
+    # stale lock that would otherwise block saves for this key forever.
+    stale_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
+    if [ -n "$stale_pid" ] && ! kill -0 "$stale_pid" 2>/dev/null; then
+        rm -rf "$lock_dir"
+        mkdir "$lock_dir" 2>/dev/null || { printf 'Lock contention, skipping: %s\n' "$cache_key"; exit 0; }
+    else
+        printf 'Another process is saving this key, skipping: %s\n' "$cache_key"
+        exit 0
+    fi
 fi
+printf '%s' "$$" > "$lock_dir/pid"
 
 release_lock() {
     rmdir "$lock_dir" 2>/dev/null || true
@@ -58,7 +68,6 @@ fi
 mkdir -p "$entries_dir"
 tmp_entry="${entries_dir}/.tmp-${safe_key}-$$"
 
-# Clean up temp entry on failure.
 cleanup_tmp() {
     release_lock
     rm -rf "$tmp_entry" 2>/dev/null || true
@@ -68,7 +77,6 @@ trap cleanup_tmp EXIT INT TERM
 rsync -a "${path_to_cache}/" "${tmp_entry}/"
 mv "$tmp_entry" "${entries_dir}/${safe_key}"
 
-# Restore simple lock-only cleanup now that tmp is gone.
 trap release_lock EXIT INT TERM
 
 size=$(du -sh "${entries_dir}/${safe_key}" 2>/dev/null | cut -f1 || printf '?')

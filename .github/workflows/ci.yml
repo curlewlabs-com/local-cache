@@ -105,3 +105,47 @@ jobs:
           [ "$count" = "1" ] \
             || (echo "Expected 1 cache entry, found: $count" && exit 1)
           echo "Idempotent save: OK"
+
+      - name: Save with non-existent source path exits cleanly
+        uses: ./save
+        with:
+          path: /tmp/this-path-does-not-exist
+          key: nonexistent-source-key
+          cache-dir: /tmp/local-cache
+
+      - name: Verify non-existent source was not cached
+        run: |
+          [ ! -d /tmp/local-cache/entries/nonexistent-source-key ] \
+            || (echo "Expected no entry for non-existent source" && exit 1)
+          echo "Non-existent source guard: OK"
+
+      - name: Set up multi-prefix fixture
+        run: |
+          mkdir -p /tmp/test-multi-prefix
+          echo "multi" > /tmp/test-multi-prefix/d.txt
+
+      - name: Save multi-prefix fixture under second prefix
+        uses: ./save
+        with:
+          path: /tmp/test-multi-prefix
+          key: prefix-b-v1
+          cache-dir: /tmp/local-cache
+
+      - name: Restore with multiple restore-keys (first misses, second hits)
+        id: restore-multi-prefix
+        uses: ./
+        with:
+          path: /tmp/test-restore-multi-prefix
+          key: no-match-at-all
+          restore-keys: |
+            prefix-a-
+            prefix-b-
+          cache-dir: /tmp/local-cache
+
+      - name: Verify second prefix was used
+        run: |
+          [ "${{ steps.restore-multi-prefix.outputs.cache-hit }}" = "false" ] \
+            || (echo "Expected cache-hit=false for prefix match" && exit 1)
+          diff /tmp/local-cache/entries/prefix-b-v1 /tmp/test-restore-multi-prefix \
+            || (echo "Multi-prefix restored content does not match" && exit 1)
+          echo "Multi-prefix restore: OK"
