@@ -1,10 +1,7 @@
-name: 'Local Cache'
+name: 'Runner Local Cache'
 description: >-
   Restore a cached directory from local disk on self-hosted runners.
-  Use curlewlabs-com/local-cache/save@v1 after your install step to populate
-  the cache on first run. A drop-in replacement for actions/cache that reads
-  from a shared local directory instead of GitHub's cloud cache servers,
-  enabling multiple runners on the same machine to share a single cache.
+  Drop-in for actions/cache using shared local storage.
 author: 'curlewlabs-com'
 branding:
   icon: 'hard-drive'
