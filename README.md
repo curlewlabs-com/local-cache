@@ -6,9 +6,11 @@ A drop-in replacement for [`actions/cache`](https://github.com/actions/cache) th
 
 ## Why
 
-`actions/cache` uploads to and downloads from GitHub's servers on every run. For large artifacts like the Flutter SDK (~1.8 GB), this adds meaningful time to every CI run even on a cache hit. If you have multiple self-hosted runners on the same machine, each runner downloads independently.
+`actions/cache` stores entries on GitHub's servers. Every restore is a download over the network, and every save is an upload. For large artifacts — the Flutter SDK is ~1.8 GB, a Cargo registry can be hundreds of MB — this costs real time on every run, even when nothing has changed.
 
-With `local-cache`, a cache hit is a local `rsync` with hard links — effectively instant regardless of artifact size.
+Self-hosted runners on the same physical machine make this worse: each runner operates independently, so if you have four runners and a warm cloud cache, you still download the artifact four times per run.
+
+With `local-cache`, the artifact lives on the machine's local disk. The first runner to miss downloads and saves it once. Every subsequent runner — including all four concurrent ones — restores via `rsync --link-dest`, which creates hard links rather than copying bytes. A 1.8 GB Flutter SDK restores in under a second.
 
 ## How it works
 
@@ -16,7 +18,7 @@ Cache entries are stored as plain directories under `cache-dir/entries/<key>/`. 
 
 ## Usage
 
-Because this is a composite action (no JavaScript post-step hook), save must be called explicitly after your install step. Use the restore/save split pattern:
+The restore/save split is intentional: composite actions have no automatic post-step hook, so the save must be called explicitly after your install step. This also gives you control over the condition — you only pay the save cost when the cache actually missed.
 
 ```yaml
 - name: Read Flutter version
@@ -93,7 +95,7 @@ On subsequent runs (any runner on the same machine): cache hit → rsync with ha
 - **No TTL or eviction.** Cache entries accumulate until manually deleted. For artifacts that change infrequently (e.g. Flutter SDK, updated monthly) this is fine. Clean up with `rm -rf cache-dir/entries/`.
 - **Hard links require same filesystem.** If `cache-dir` is on a different filesystem than `path`, `rsync` falls back to a regular copy automatically. The cache still works, just without the zero-copy benefit.
 - **No GitHub cloud fallback.** Unlike `actions/cache`, there is no network fallback on a local miss. The first run on a new machine always downloads.
-- **Composite action only.** No implicit post-step save hook. You must call `curlewlabs-com/local-cache/save@v1` explicitly.
+- **Explicit save required.** Composite actions have no automatic post-step hook, so you must call `curlewlabs-com/local-cache/save@v1` explicitly after your install step. A JavaScript action with a `post:` hook would enable a single-step interface, but that would require bundling a Node.js runtime into the action.
 
 ## License
 
