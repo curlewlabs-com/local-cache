@@ -1,5 +1,6 @@
 #!/bin/sh
-# Save a directory to the local disk cache.
+# Called by the composite action's save step to persist a directory to local
+# disk, avoiding network round-trips to GitHub's cache servers.
 #
 # Usage: cache-save.sh <path> <key> <cache-dir>
 #
@@ -16,12 +17,6 @@ path_to_cache="$1"
 cache_key="$2"
 cache_dir="$3"
 
-# GitHub Actions does not expand ~ in input values — do it here so callers
-# can write path: ~/.cargo/registry without a preceding resolution step.
-case "$path_to_cache" in
-    [~]/*) path_to_cache="${HOME}${path_to_cache#?}" ;;
-    [~])   path_to_cache="${HOME}" ;;
-esac
 
 if [ -z "$path_to_cache" ] || [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
     printf '::error::cache-save: path, key, and cache-dir must not be empty\n'
@@ -33,10 +28,12 @@ locks_dir="${cache_dir}/.locks"
 
 start_time=$(date +%s)
 
+# SYNC: must match lib/cache-restore.sh:sanitize_key exactly.
 sanitize_key() {
     printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '_'
 }
 
+# SYNC: must match lib/cache-restore.sh:append_summary exactly.
 append_summary() {
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
@@ -65,11 +62,17 @@ lock_dir="${locks_dir}/${safe_key}.lock"
 
 # mkdir is atomic on POSIX filesystems so concurrent runners cannot both win.
 if ! mkdir "$lock_dir" 2>/dev/null; then
-    # Check if the lock-holder is still alive. A SIGKILL or reboot leaves a
-    # stale lock that would otherwise block saves for this key forever.
+    # Check if the lock-holder is still alive. A SIGKILL, OOM kill, or reboot
+    # leaves a stale lock that would otherwise block saves for this key forever.
+    # Missing PID file (process killed between mkdir and PID write) is treated
+    # the same as a dead PID — the holder is gone either way.
     stale_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
-    if [ -n "$stale_pid" ] && ! kill -0 "$stale_pid" 2>/dev/null; then
-        printf '::debug::Removing stale lock (PID %s no longer running)\n' "$stale_pid"
+    if [ -z "$stale_pid" ] || ! kill -0 "$stale_pid" 2>/dev/null; then
+        # Jittered sleep prevents two runners from both detecting the stale lock
+        # and racing through rm + mkdir at the same instant.
+        jitter=$(( $$ % 5 + 1 ))
+        printf '::debug::Stale lock detected (PID %s). Waiting %ds before recovery.\n' "${stale_pid:-missing}" "$jitter"
+        sleep "$jitter"
         rm -rf "$lock_dir"
         mkdir "$lock_dir" 2>/dev/null || { printf '::debug::Lock contention after stale recovery, skipping: %s\n' "$cache_key"; exit 0; }
     else
@@ -105,15 +108,12 @@ mv "$tmp_entry" "${entries_dir}/${safe_key}"
 
 trap release_lock EXIT INT TERM
 
-# Verify hard links are available by checking the link count on a sample file.
-# nlink > 1 means future restores will be zero-copy; nlink = 1 means rsync
-# will fall back to a full copy (cross-filesystem or no hardlink support).
+# Hard link detection — knowing whether restores will be zero-copy helps
+# diagnose unexpected slowness on cross-filesystem setups.
 sample=$(find "${entries_dir}/${safe_key}" -type f 2>/dev/null | head -1 || true)
 if [ -n "$sample" ]; then
     nlink=$(stat -c '%h' "$sample" 2>/dev/null || stat -f '%l' "$sample" 2>/dev/null || true)
-    # 2>/dev/null guards against non-numeric stat output (e.g. empty string) which
-    # would make [ -gt ] a syntax error on some shells; || true already handles that,
-    # but the redirect silences the shell-level error message cleanly.
+    # Guard against non-numeric stat output which causes a syntax error in some shells.
     if [ "${nlink:-0}" -gt 1 ] 2>/dev/null; then
         printf '::debug::Hard links available (nlink=%s) — future restores will be zero-copy\n' "$nlink"
     else

@@ -90,7 +90,7 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-vers
 ```yaml
 - uses: curlewlabs-com/local-cache@v1
   with:
-    path: ~/.cargo/registry
+    path: ${{ env.HOME }}/.cargo/registry
     key: cargo-${{ hashFiles('Cargo.lock') }}
     restore-keys: |
       cargo-
@@ -106,14 +106,14 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-vers
 | `path` | Yes | Path to restore the cached directory to |
 | `key` | Yes | Exact cache key |
 | `restore-keys` | No | Newline-separated key prefixes for fallback matching |
-| `cache-dir` | Yes | Local directory for cache storage (must be persistent and shared across runners) |
+| `cache-dir` | Yes | Absolute path to local cache directory (must be persistent and shared across runners; tilde expansion not supported) |
 
 ## Outputs
 
 | Output | Description |
 |--------|-------------|
 | `cache-hit` | `true` if an exact key match was found |
-| `cache-matched-key` | Key that was actually restored (empty on miss) |
+| `cache-matched-key` | Key that was actually restored (empty on miss). For prefix matches, this is the sanitized on-disk directory name, not the original key. |
 
 ## Save inputs
 
@@ -127,14 +127,23 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-vers
 
 If the tool respects an environment variable that controls where it stores its cache or installation (e.g. `PUB_CACHE`, `CARGO_HOME`, `BUN_INSTALL_CACHE_DIR`, `GRADLE_USER_HOME`), point that variable at a shared persistent directory instead. Every runner on the machine will use the same live directory with zero copying overhead — no restore or save step needed.
 
-Use `local-cache` when you cannot control where a tool installs itself. The Flutter SDK (`subosito/flutter-action` installs into `runner.tool_cache`, which is per-runner) and the Cargo registry (`~/.cargo`, which is per-user home) are typical examples: they do not natively share state across runners on the same machine.
+Use `local-cache` when you cannot control where a tool installs itself. The Flutter SDK (`subosito/flutter-action` installs into `runner.tool_cache`, which is per-runner) and the Cargo registry (`$HOME/.cargo`, which is per-user home) are typical examples: they do not natively share state across runners on the same machine.
 
 ## Limitations
 
 - **No TTL or eviction.** Cache entries accumulate until manually deleted. For artifacts that change infrequently (e.g. Flutter SDK, updated monthly) this is fine. Clean up with `rm -rf cache-dir/entries/`.
 - **Hard links require same filesystem.** If `cache-dir` is on a different filesystem than `path`, `rsync` falls back to a regular copy automatically. The cache still works, just without the zero-copy benefit.
 - **No GitHub cloud fallback.** Unlike `actions/cache`, there is no network fallback on a local miss. The first run on a new machine always downloads.
-- **Explicit save required.** Composite actions have no automatic post-step hook, so you must call `curlewlabs-com/local-cache/save@v1` explicitly after your install step. A JavaScript action with a `post:` hook would enable a single-step interface, but that would require bundling a Node.js runtime into the action.
+- **Explicit save required.** Composite actions have no automatic post-step hook, so you must call `curlewlabs-com/local-cache/save@v1` explicitly after your install step. A JavaScript action with a `post:` hook would enable a single-step interface, but adds a build step and Node.js dependency that this action avoids by being pure shell.
+
+## Releasing
+
+Users pin to `@v1` (floating major tag). After merging to `main`, move the tag:
+
+```sh
+git tag -f v1 HEAD
+git push --force origin v1
+```
 
 ## License
 
