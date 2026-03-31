@@ -17,8 +17,8 @@ inputs:
     required: true
   cache-dir:
     description: >-
-      Local directory where cache entries are stored. Must match the value
-      used in the restore step.
+      Absolute path to local directory where cache entries are stored. Must
+      match the value used in the restore step. Tilde expansion is not supported.
     required: true
 
 runs:
