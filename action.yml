@@ -22,9 +22,9 @@ inputs:
     default: ''
   cache-dir:
     description: >-
-      Local directory where cache entries are stored. Must be a persistent
-      path shared across all runners on the same machine (e.g. a path outside
-      the per-workspace _work directory).
+      Absolute path to local directory where cache entries are stored. Must be
+      persistent and shared across all runners on the same machine (e.g. a path
+      outside the per-workspace _work directory). Tilde expansion is not supported.
     required: true
 
 outputs:

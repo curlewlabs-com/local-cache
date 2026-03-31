@@ -1,5 +1,6 @@
 #!/bin/sh
-# Restore a cached directory from local disk.
+# Called by the composite action's restore step to avoid network round-trips
+# to GitHub's cache servers.
 #
 # Usage: cache-restore.sh <path> <key> <cache-dir> [restore-keys]
 #
@@ -18,12 +19,6 @@ cache_key="$2"
 cache_dir="$3"
 restore_keys="${4:-}"
 
-# GitHub Actions does not expand ~ in input values — do it here so callers
-# can write path: ~/.cargo/registry without a preceding resolution step.
-case "$path_to_cache" in
-    [~]/*) path_to_cache="${HOME}${path_to_cache#?}" ;;
-    [~])   path_to_cache="${HOME}" ;;
-esac
 
 if [ -z "$path_to_cache" ] || [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
     printf '::error::cache-restore: path, key, and cache-dir must not be empty\n'
@@ -41,6 +36,7 @@ entries_dir="${cache_dir}/entries"
 
 start_time=$(date +%s)
 
+# SYNC: must match lib/cache-save.sh:sanitize_key exactly.
 sanitize_key() {
     printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '_'
 }
@@ -51,9 +47,7 @@ hardlink_status() {
     sample=$(find "$target_dir" -type f 2>/dev/null | head -1 || true)
     [ -z "$sample" ] && return
     nlink=$(stat -c '%h' "$sample" 2>/dev/null || stat -f '%l' "$sample" 2>/dev/null || true)
-    # 2>/dev/null guards against non-numeric stat output (e.g. empty string) which
-    # would make [ -gt ] a syntax error on some shells; the redirect silences the
-    # shell-level error message without hiding the actual stat failure.
+    # Guard against non-numeric stat output which causes a syntax error in some shells.
     if [ "${nlink:-0}" -gt 1 ] 2>/dev/null; then
         printf '::debug::Hard links confirmed (nlink=%s) — restore was zero-copy\n' "$nlink"
     else
@@ -61,6 +55,7 @@ hardlink_status() {
     fi
 }
 
+# SYNC: must match lib/cache-save.sh:append_summary exactly.
 append_summary() {
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
@@ -114,9 +109,8 @@ if [ -n "$restore_keys" ]; then
         [ -z "$prefix" ] && continue
         [ -n "$found_match" ] && break
         safe_prefix=$(sanitize_key "$prefix")
-        # ls -dt with a glob sorts by mtime without grep. SC2012: keys are
-        # sanitized to [a-zA-Z0-9._-] so filenames are safe. SC2015: the
-        # || true applies only to cd failing; ls|head always succeeds.
+        # SC2012: keys are sanitized to [a-zA-Z0-9._-] so filenames are safe.
+        # SC2015: || true applies only to cd failing; ls|head always succeeds.
         # -- prevents keys starting with "-" from being interpreted as ls flags.
         # shellcheck disable=SC2012,SC2015
         match=$(cd "${entries_dir}" 2>/dev/null && ls -dt -- "${safe_prefix}"* 2>/dev/null | head -1 || true)
