@@ -138,11 +138,17 @@ Use `local-cache` when you cannot control where a tool installs itself. The Flut
 
 ## Releasing
 
-Users pin to `@v1` (floating major tag). After merging to `main`, move the tag:
+Users pin to `@v1` (floating major tag). After merging to `main`:
 
 ```sh
+# Move the floating tag so @v1 users get the update.
 git tag -f v1 HEAD
 git push --force origin v1
+
+# Create a versioned release for the marketplace.
+git tag v1.x.y HEAD
+git push origin v1.x.y
+gh release create v1.x.y --title "v1.x.y" --notes "changelog here"
 ```
 
 ## License
