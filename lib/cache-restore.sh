@@ -60,7 +60,9 @@ cow_restore() {
 
     # macOS APFS: cp -cR creates per-file clones via clonefile(2).
     # Instant, zero additional disk until a file is modified.
-    if cp -cR "$src/" "$dst/" 2>/dev/null; then
+    # The "/." suffix copies the directory *contents* into dst, not the
+    # directory itself — without it, cp creates dst/basename(src)/.
+    if cp -cR "$src/." "$dst/" 2>/dev/null; then
         printf '::debug::Restored via APFS clone (copy-on-write)\n'
         return 0
     fi
@@ -68,7 +70,7 @@ cow_restore() {
     # Linux Btrfs/XFS: cp --reflink=auto uses ioctl(FICLONE) for CoW.
     # On ext4 (default WSL2), --reflink=auto silently falls back to a
     # regular copy — no error, just uses disk.
-    if cp -a --reflink=auto "$src/" "$dst/" 2>/dev/null; then
+    if cp -a --reflink=auto "$src/." "$dst/" 2>/dev/null; then
         printf '::debug::Restored via cp (reflink=auto)\n'
         return 0
     fi
