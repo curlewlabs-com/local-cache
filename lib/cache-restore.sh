@@ -16,7 +16,7 @@
 # which cache key was last restored.  When the marker matches the
 # current key, the restore is skipped entirely — zero work.  When it
 # doesn't match (or is missing, e.g. from a v1 hard-link restore), the
-# target is cleaned and re-synced.
+# target is cleaned and re-synced from the local cache.
 set -e
 
 MARKER_NAME=".local-cache-restore"
