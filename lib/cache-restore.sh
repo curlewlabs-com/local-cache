@@ -8,11 +8,18 @@
 #   cache-hit=true|false
 #   cache-matched-key=<key>
 #
-# On a cache hit, rsync restores the entry to <path> using hard links where
-# possible (same filesystem) so the restore is near-instant regardless of
-# cache size. Falls back to a regular copy automatically when hard links are
-# not available (cross-filesystem).
+# On a cache hit, rsync copies the entry to the target path.  The value
+# of the local cache is avoiding repeated network downloads — the copy
+# itself is a plain local operation (a few seconds for ~1.8 GB).
+#
+# A marker file (.local-cache-restore) in the target directory records
+# which cache key was last restored.  When the marker matches the
+# current key, the restore is skipped entirely — zero work.  When it
+# doesn't match (or is missing, e.g. from a v1 hard-link restore), the
+# target is cleaned and re-synced.
 set -e
+
+MARKER_NAME=".local-cache-restore"
 
 path_to_cache="$1"
 cache_key="$2"
@@ -41,20 +48,6 @@ sanitize_key() {
     printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '_'
 }
 
-# stat syntax differs between Linux (-c) and macOS (-f).
-hardlink_status() {
-    target_dir="$1"
-    sample=$(find "$target_dir" -type f 2>/dev/null | head -1 || true)
-    [ -z "$sample" ] && return
-    nlink=$(stat -c '%h' "$sample" 2>/dev/null || stat -f '%l' "$sample" 2>/dev/null || true)
-    # Guard against non-numeric stat output which causes a syntax error in some shells.
-    if [ "${nlink:-0}" -gt 1 ] 2>/dev/null; then
-        printf '::debug::Hard links confirmed (nlink=%s) — restore was zero-copy\n' "$nlink"
-    else
-        printf '::debug::Copying files (cross-filesystem fallback) — restore used full copy\n'
-    fi
-}
-
 # SYNC: must match lib/cache-save.sh:append_summary exactly.
 append_summary() {
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
@@ -62,13 +55,44 @@ append_summary() {
     fi
 }
 
+# Check whether the target already has the expected content from a
+# previous v2 restore.  Returns 0 (true) if the marker matches.
+is_current() {
+    marker="${path_to_cache}/${MARKER_NAME}"
+    [ -f "$marker" ] && [ "$(cat "$marker")" = "v2:$1" ]
+}
+
 do_restore() {
     entry_path="$1"
     matched_key="$2"
     is_exact="$3"
+
+    # If a previous v2 restore left a marker matching this key, the
+    # target already has the right content — skip the copy entirely.
+    if is_current "$matched_key"; then
+        elapsed=$(( $(date +%s) - start_time ))
+        printf '::debug::Target is current (marker matches) — skipping restore\n'
+        if [ "$is_exact" = "true" ]; then
+            printf 'cache-hit=true\n' >> "$GITHUB_OUTPUT"
+            printf '::notice::Cache hit (exact, skipped): %s (0s)\n' "$matched_key"
+            append_summary "- **local-cache** \`${matched_key}\` → ✅ Hit (skipped, ${elapsed}s)"
+        else
+            printf 'cache-hit=false\n' >> "$GITHUB_OUTPUT"
+            printf '::notice::Cache hit (prefix, skipped): %s (0s)\n' "$matched_key"
+            append_summary "- **local-cache** \`${matched_key}\` → ⚠️ Prefix hit (skipped, ${elapsed}s)"
+        fi
+        printf 'cache-matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
+        return
+    fi
+
+    # Target is stale, from v1, or doesn't exist — start fresh.
+    rm -rf "$path_to_cache"
     mkdir -p "$path_to_cache"
-    rsync -a --link-dest="${entry_path}/" "${entry_path}/" "${path_to_cache}/"
-    hardlink_status "$path_to_cache"
+    rsync -a "$entry_path/" "$path_to_cache/"
+
+    # Write the v2 marker so future restores with the same key skip.
+    printf 'v2:%s' "$matched_key" > "${path_to_cache}/${MARKER_NAME}"
+
     elapsed=$(( $(date +%s) - start_time ))
     size=$(du -sh "$path_to_cache" 2>/dev/null | cut -f1 || printf '?')
     file_count=$(find "$path_to_cache" -type f | wc -l | tr -d ' ')

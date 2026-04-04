@@ -334,3 +334,83 @@ jobs:
           test -d /tmp/local-cache/entries/no-pid-key \
             || (echo "Expected no-pid-key entry after recovery" && exit 1)
           echo "Stale lock recovery (missing PID): OK"
+
+      - name: Restore writes v2 marker
+        run: |
+          mkdir -p /tmp/test-marker-src
+          echo "marker-test" > /tmp/test-marker-src/data.txt
+          sh lib/cache-save.sh /tmp/test-marker-src marker-key /tmp/local-cache
+          sh lib/cache-restore.sh /tmp/test-marker-dst marker-key /tmp/local-cache ""
+          marker=$(cat /tmp/test-marker-dst/.local-cache-restore)
+          [ "$marker" = "v2:marker-key" ] \
+            || (echo "Expected marker 'v2:marker-key', got '$marker'" && exit 1)
+          echo "Marker written: OK"
+
+      - name: Second restore with same key is skipped
+        run: |
+          # Modify the restored content — if restore skips, this survives.
+          echo "modified" > /tmp/test-marker-dst/data.txt
+          sh lib/cache-restore.sh /tmp/test-marker-dst marker-key /tmp/local-cache ""
+          content=$(cat /tmp/test-marker-dst/data.txt)
+          [ "$content" = "modified" ] \
+            || (echo "Expected 'modified' (skipped restore), got '$content'" && exit 1)
+          echo "Same-key skip: OK"
+
+      - name: Restore with different key replaces content
+        run: |
+          mkdir -p /tmp/test-newkey-src
+          echo "new-content" > /tmp/test-newkey-src/data.txt
+          sh lib/cache-save.sh /tmp/test-newkey-src new-marker-key /tmp/local-cache
+          # Restore new key into the same target that has the old marker.
+          sh lib/cache-restore.sh /tmp/test-marker-dst new-marker-key /tmp/local-cache ""
+          content=$(cat /tmp/test-marker-dst/data.txt)
+          [ "$content" = "new-content" ] \
+            || (echo "Expected 'new-content', got '$content'" && exit 1)
+          marker=$(cat /tmp/test-marker-dst/.local-cache-restore)
+          [ "$marker" = "v2:new-marker-key" ] \
+            || (echo "Expected updated marker, got '$marker'" && exit 1)
+          echo "Different-key replace: OK"
+
+      - name: v1 target (no marker) is replaced on restore
+        run: |
+          # Simulate a v1 restore — content exists but no marker file.
+          mkdir -p /tmp/test-v1-target
+          echo "v1-content" > /tmp/test-v1-target/data.txt
+          sh lib/cache-restore.sh /tmp/test-v1-target marker-key /tmp/local-cache ""
+          content=$(cat /tmp/test-v1-target/data.txt)
+          [ "$content" = "marker-test" ] \
+            || (echo "Expected 'marker-test' from cache, got '$content'" && exit 1)
+          [ -f /tmp/test-v1-target/.local-cache-restore ] \
+            || (echo "Expected v2 marker after migration" && exit 1)
+          echo "v1 migration: OK"
+
+      - name: Restore isolation — modifying restored files does not corrupt cache
+        run: |
+          sh lib/cache-restore.sh /tmp/test-isolation-dst marker-key /tmp/local-cache ""
+          echo "corrupted" > /tmp/test-isolation-dst/data.txt
+          cached=$(cat /tmp/local-cache/entries/marker-key/data.txt)
+          [ "$cached" = "marker-test" ] \
+            || (echo "Cache entry corrupted: expected 'marker-test', got '$cached'" && exit 1)
+          echo "Restore isolation: OK"
+
+      - name: Concurrent restores — each consumer gets an isolated copy
+        run: |
+          mkdir -p /tmp/test-concurrent-restore-src
+          echo "shared" > /tmp/test-concurrent-restore-src/data.txt
+          sh lib/cache-save.sh /tmp/test-concurrent-restore-src concurrent-restore-key /tmp/local-cache
+
+          sh lib/cache-restore.sh /tmp/concurrent-dst-a concurrent-restore-key /tmp/local-cache "" &
+          sh lib/cache-restore.sh /tmp/concurrent-dst-b concurrent-restore-key /tmp/local-cache "" &
+          wait
+
+          [ "$(cat /tmp/concurrent-dst-a/data.txt)" = "shared" ] \
+            || (echo "Concurrent restore A has wrong content" && exit 1)
+          [ "$(cat /tmp/concurrent-dst-b/data.txt)" = "shared" ] \
+            || (echo "Concurrent restore B has wrong content" && exit 1)
+
+          echo "modified-a" > /tmp/concurrent-dst-a/data.txt
+          [ "$(cat /tmp/concurrent-dst-b/data.txt)" = "shared" ] \
+            || (echo "Modifying A corrupted B" && exit 1)
+          [ "$(cat /tmp/local-cache/entries/concurrent-restore-key/data.txt)" = "shared" ] \
+            || (echo "Modifying A corrupted cache entry" && exit 1)
+          echo "Concurrent restore isolation: OK"
