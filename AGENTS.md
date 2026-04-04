@@ -10,5 +10,5 @@ A GitHub composite action that provides local-disk caching for self-hosted runne
 - No external dependencies beyond `rsync`, `sh`, and standard POSIX utilities.
 - The action interface (`action.yml`, `save/action.yml`) must remain compatible with `actions/cache` inputs/outputs (`path`, `key`, `restore-keys`, `cache-hit`, `cache-matched-key`).
 - Every change ships with a test in `.github/workflows/ci.yml`.
-- Tag releases as `v1`, `v2`, etc. (major only). Use floating major tags.
+- Tag releases as `v2`, `v3`, etc. (major only). Use floating major tags.
 - Never add a `cache-dir` default — callers must always be explicit about where their cache lives.

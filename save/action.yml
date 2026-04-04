@@ -2,7 +2,7 @@ name: 'Local Cache (Save)'
 description: >-
   Save a directory to the local disk cache on self-hosted runners.
   Call this after your install step, conditional on a cache miss from
-  curlewlabs-com/local-cache@v1 (the restore step).
+  the restore step (curlewlabs-com/local-cache).
 author: 'curlewlabs-com'
 branding:
   icon: 'hard-drive'

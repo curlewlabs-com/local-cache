@@ -68,8 +68,9 @@ if ! mkdir "$lock_dir" 2>/dev/null; then
     # the same as a dead PID — the holder is gone either way.
     stale_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
     if [ -z "$stale_pid" ] || ! kill -0 "$stale_pid" 2>/dev/null; then
-        # Jittered sleep prevents two runners from both detecting the stale lock
-        # and racing through rm + mkdir at the same instant.
+        # Jittered sleep reduces the chance of two runners racing through
+        # rm + mkdir simultaneously.  The real safety net is the post-lock
+        # re-check at line 91 — if the race is lost, the loser skips.
         jitter=$(( $$ % 5 + 1 ))
         printf '::debug::Stale lock detected (PID %s). Waiting %ds before recovery.\n' "${stale_pid:-missing}" "$jitter"
         sleep "$jitter"
@@ -107,19 +108,6 @@ rsync -a "${path_to_cache}/" "${tmp_entry}/"
 mv "$tmp_entry" "${entries_dir}/${safe_key}"
 
 trap release_lock EXIT INT TERM
-
-# Hard link detection — knowing whether restores will be zero-copy helps
-# diagnose unexpected slowness on cross-filesystem setups.
-sample=$(find "${entries_dir}/${safe_key}" -type f 2>/dev/null | head -1 || true)
-if [ -n "$sample" ]; then
-    nlink=$(stat -c '%h' "$sample" 2>/dev/null || stat -f '%l' "$sample" 2>/dev/null || true)
-    # Guard against non-numeric stat output which causes a syntax error in some shells.
-    if [ "${nlink:-0}" -gt 1 ] 2>/dev/null; then
-        printf '::debug::Hard links available (nlink=%s) — future restores will be zero-copy\n' "$nlink"
-    else
-        printf '::debug::Hard links not available — future restores will use full copy\n'
-    fi
-fi
 
 elapsed=$(( $(date +%s) - start_time ))
 size=$(du -sh "${entries_dir}/${safe_key}" 2>/dev/null | cut -f1 || printf '?')
