@@ -22,6 +22,8 @@ Cache entries are stored as plain directories under `cache-dir/entries/<key>/`. 
 
 On save, content is synced to a temp directory then renamed atomically into place. Concurrent writers are serialized with a `mkdir`-based advisory lock; the second writer skips rather than corrupting the entry.
 
+**Why clean-before-restore matters:** The `rm -rf` before each restore is deliberate — it prevents stale content from accumulating across version bumps. Without it, tools that install new versions alongside old ones (e.g. `subosito/flutter-action` in `runner.tool_cache`) would cause the save step to capture every version ever installed, growing the cache entry without bound. The clean restore ensures the target only ever contains what the cache entry has plus what the current install step adds — nothing from previous versions survives.
+
 **Why not hard links?** v1 used `rsync --link-dest` for zero-copy restores. This is unsafe when multiple runners restore the same entry concurrently: hard links share the same inode, so if one consumer modifies a file (e.g. `flutter` upgrading `engine.version` during setup), the modification corrupts the cache entry for every other consumer.
 
 **Why not copy-on-write (APFS clones, reflinks)?** CoW semantics are not portable: `cp -c` is macOS-only (APFS), `cp --reflink` is Linux-only (Btrfs/XFS, not ext4), and edge-case behavior (failure modes, metadata preservation on fallback) varies across OS versions. We optimize for easy to understand over minimal: one tool (`rsync`), one behavior, no platform detection. The marker-based skip also makes CoW redundant for the common case — steady-state restores are constant-time work, and version bumps (the only case CoW would help) are rare and take seconds.
@@ -139,6 +141,14 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-vers
 Change `@v1` to `@v2` in your workflow files. No other changes needed.
 
 On the first v2 restore, the target directory is cleaned and re-synced (since v1 left hard-linked files with no marker). After that, restores with the same key are skipped entirely.
+
+**Purge bloated v1 entries after upgrading.** v1 did not clean the target before restoring, so tools that install new versions alongside old ones (e.g. Flutter) caused the save step to capture every version ever installed. After upgrading to v2, delete the old entries so the next save creates a clean one:
+
+```sh
+rm -rf /path/to/cache-dir/entries/*
+```
+
+This forces a one-time cache miss and re-download. Future entries will be clean because v2's restore starts from an empty target.
 
 ## When not to use this
 
