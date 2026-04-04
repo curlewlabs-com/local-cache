@@ -7,7 +7,7 @@ A GitHub composite action that provides local-disk caching for self-hosted runne
 ## Rules
 
 - Shell scripts in `lib/` must use `#!/bin/sh` and pass `shellcheck` with no warnings.
-- No external dependencies beyond `rsync`, `sh`, and standard POSIX utilities.
+- No external dependencies beyond `cp`, `rsync`, `sh`, and standard POSIX utilities. The restore script tries `cp -c` (macOS) and `cp --reflink=auto` (Linux) before falling back to `rsync -a`.
 - The action interface (`action.yml`, `save/action.yml`) must remain compatible with `actions/cache` inputs/outputs (`path`, `key`, `restore-keys`, `cache-hit`, `cache-matched-key`).
 - Every change ships with a test in `.github/workflows/ci.yml`.
 - Tag releases as `v1`, `v2`, etc. (major only). Use floating major tags.

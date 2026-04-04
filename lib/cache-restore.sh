@@ -8,10 +8,16 @@
 #   cache-hit=true|false
 #   cache-matched-key=<key>
 #
-# On a cache hit, rsync restores the entry to <path> using hard links where
-# possible (same filesystem) so the restore is near-instant regardless of
-# cache size. Falls back to a regular copy automatically when hard links are
-# not available (cross-filesystem).
+# On a cache hit, the entry is restored using copy-on-write where available:
+#   1. macOS APFS:  cp -cR  (clonefile — instant, zero disk until modified)
+#   2. Linux CoW:   cp -a --reflink=auto  (Btrfs/XFS — same benefit; ext4
+#                   silently falls back to a regular copy)
+#   3. Fallback:    rsync -a  (plain copy — works everywhere)
+#
+# Why not hard links?  Hard links share the same inode data, so a consumer
+# that modifies a restored file (e.g. flutter upgrading engine.version)
+# corrupts the cache entry for every other consumer.  CoW clones share data
+# blocks until written, then diverge — safe for concurrent modification.
 set -e
 
 path_to_cache="$1"
@@ -41,18 +47,36 @@ sanitize_key() {
     printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '_'
 }
 
-# stat syntax differs between Linux (-c) and macOS (-f).
-hardlink_status() {
-    target_dir="$1"
-    sample=$(find "$target_dir" -type f 2>/dev/null | head -1 || true)
-    [ -z "$sample" ] && return
-    nlink=$(stat -c '%h' "$sample" 2>/dev/null || stat -f '%l' "$sample" 2>/dev/null || true)
-    # Guard against non-numeric stat output which causes a syntax error in some shells.
-    if [ "${nlink:-0}" -gt 1 ] 2>/dev/null; then
-        printf '::debug::Hard links confirmed (nlink=%s) — restore was zero-copy\n' "$nlink"
-    else
-        printf '::debug::Copying files (cross-filesystem fallback) — restore used full copy\n'
+# Restore the cache entry to the target path using the best available
+# copy strategy.  Tries CoW clones first (APFS on macOS, reflink on
+# Linux Btrfs/XFS), then falls back to a plain copy.
+#
+# To upgrade WSL2 runners from plain-copy to CoW: format the cache
+# partition as Btrfs (mkfs.btrfs) — cp --reflink=auto will pick it up
+# automatically with no code change here.
+cow_restore() {
+    src="$1"
+    dst="$2"
+
+    # macOS APFS: cp -cR creates per-file clones via clonefile(2).
+    # Instant, zero additional disk until a file is modified.
+    if cp -cR "$src/" "$dst/" 2>/dev/null; then
+        printf '::debug::Restored via APFS clone (copy-on-write)\n'
+        return 0
     fi
+
+    # Linux Btrfs/XFS: cp --reflink=auto uses ioctl(FICLONE) for CoW.
+    # On ext4 (default WSL2), --reflink=auto silently falls back to a
+    # regular copy — no error, just uses disk.
+    if cp -a --reflink=auto "$src/" "$dst/" 2>/dev/null; then
+        printf '::debug::Restored via cp (reflink=auto)\n'
+        return 0
+    fi
+
+    # POSIX baseline: plain rsync copy.  No hard links — see header
+    # comment for why hard links are unsafe here.
+    rsync -a "$src/" "$dst/"
+    printf '::debug::Restored via rsync (plain copy)\n'
 }
 
 # SYNC: must match lib/cache-save.sh:append_summary exactly.
@@ -66,9 +90,30 @@ do_restore() {
     entry_path="$1"
     matched_key="$2"
     is_exact="$3"
+
+    # Clean the target before restoring.  This handles two cases:
+    #   1. Migration from hard-link restores: old files share inodes with
+    #      the cache entry — any modification corrupts the cache.  nlink>1
+    #      is the telltale sign.
+    #   2. Stale content from a previous SDK version that the cache entry
+    #      no longer contains.  cp/rsync overlay without deleting, so
+    #      leftover files would persist silently.
+    # Starting fresh ensures the restored tree exactly matches the entry.
+    if [ -d "$path_to_cache" ]; then
+        sample=$(find "$path_to_cache" -type f 2>/dev/null | head -1 || true)
+        nlink=0
+        if [ -n "$sample" ]; then
+            nlink=$(stat -c '%h' "$sample" 2>/dev/null || stat -f '%l' "$sample" 2>/dev/null || echo 0)
+        fi
+        # Guard against non-numeric stat output.
+        if [ "${nlink:-0}" -gt 1 ] 2>/dev/null; then
+            printf '::warning::Clearing hard-linked restore at %s (migrating to copy-on-write)\n' "$path_to_cache"
+        fi
+        rm -rf "$path_to_cache"
+    fi
+
     mkdir -p "$path_to_cache"
-    rsync -a --link-dest="${entry_path}/" "${entry_path}/" "${path_to_cache}/"
-    hardlink_status "$path_to_cache"
+    cow_restore "$entry_path" "$path_to_cache"
     elapsed=$(( $(date +%s) - start_time ))
     size=$(du -sh "$path_to_cache" 2>/dev/null | cut -f1 || printf '?')
     file_count=$(find "$path_to_cache" -type f | wc -l | tr -d ' ')

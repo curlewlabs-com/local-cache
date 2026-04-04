@@ -334,3 +334,45 @@ jobs:
           test -d /tmp/local-cache/entries/no-pid-key \
             || (echo "Expected no-pid-key entry after recovery" && exit 1)
           echo "Stale lock recovery (missing PID): OK"
+
+      - name: Restore isolation — modifying restored files does not corrupt cache entry
+        run: |
+          # Save a known fixture.
+          mkdir -p /tmp/test-isolation-src
+          echo "original" > /tmp/test-isolation-src/data.txt
+          sh lib/cache-save.sh /tmp/test-isolation-src isolation-key /tmp/local-cache
+
+          # Restore and modify the restored copy.
+          sh lib/cache-restore.sh /tmp/test-isolation-dst isolation-key /tmp/local-cache ""
+          echo "modified" > /tmp/test-isolation-dst/data.txt
+
+          # The cache entry must still contain the original content.
+          cached=$(cat /tmp/local-cache/entries/isolation-key/data.txt)
+          [ "$cached" = "original" ] \
+            || (echo "Cache entry was corrupted: expected 'original', got '$cached'" && exit 1)
+          echo "Restore isolation: OK"
+
+      - name: Migration — hard-linked target is replaced on restore
+        run: |
+          # Simulate a legacy hard-link restore by linking a file from the
+          # cache entry into a target directory.
+          mkdir -p /tmp/test-migration-dst
+          ln /tmp/local-cache/entries/isolation-key/data.txt /tmp/test-migration-dst/data.txt
+          nlink=$(stat -c '%h' /tmp/test-migration-dst/data.txt 2>/dev/null \
+                  || stat -f '%l' /tmp/test-migration-dst/data.txt)
+          [ "$nlink" -gt 1 ] || (echo "Expected nlink > 1 for hard link" && exit 1)
+
+          # Restore over the hard-linked target — should clear and replace.
+          sh lib/cache-restore.sh /tmp/test-migration-dst isolation-key /tmp/local-cache ""
+          nlink_after=$(stat -c '%h' /tmp/test-migration-dst/data.txt 2>/dev/null \
+                        || stat -f '%l' /tmp/test-migration-dst/data.txt)
+          # On ext4 (ubuntu-latest), the restored copy should have nlink=1.
+          # On Btrfs it would also be 1 (reflink, not hard link).
+          [ "$nlink_after" -eq 1 ] \
+            || (echo "Expected nlink=1 after migration, got $nlink_after" && exit 1)
+
+          # Cache entry must still be intact.
+          cached=$(cat /tmp/local-cache/entries/isolation-key/data.txt)
+          [ "$cached" = "original" ] \
+            || (echo "Cache entry corrupted during migration: expected 'original', got '$cached'" && exit 1)
+          echo "Hard-link migration: OK"
