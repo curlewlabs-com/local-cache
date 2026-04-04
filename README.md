@@ -16,7 +16,7 @@ With `local-cache`, the artifact lives on the machine's local disk. On the first
 
 Cache entries are stored as plain directories under `cache-dir/entries/<key>/`. On restore, `rsync -a` copies the entry to the target path. A marker file (`.local-cache-restore`) in the target records which key was last restored:
 
-- **Marker matches current key** → restore is skipped entirely (zero work)
+- **Marker matches current key** → restore is skipped entirely (constant-time work)
 - **Marker missing or different key** → target is cleaned and re-synced from cache
 - **No marker (v1 upgrade)** → treated as stale, cleaned and re-synced
 
@@ -24,7 +24,7 @@ On save, content is synced to a temp directory then renamed atomically into plac
 
 **Why not hard links?** v1 used `rsync --link-dest` for zero-copy restores. This is unsafe when multiple runners restore the same entry concurrently: hard links share the same inode, so if one consumer modifies a file (e.g. `flutter` upgrading `engine.version` during setup), the modification corrupts the cache entry for every other consumer.
 
-**Why not copy-on-write (APFS clones, reflinks)?** CoW semantics are not portable: `cp -c` is macOS-only (APFS), `cp --reflink` is Linux-only (Btrfs/XFS, not ext4), and edge-case behavior (failure modes, metadata preservation on fallback) varies across OS versions. We optimize for easy to understand over minimal: one tool (`rsync`), one behavior, no platform detection. The marker-based skip also makes CoW redundant for the common case — steady-state restores are zero work, and version bumps (the only case CoW would help) are rare and take seconds.
+**Why not copy-on-write (APFS clones, reflinks)?** CoW semantics are not portable: `cp -c` is macOS-only (APFS), `cp --reflink` is Linux-only (Btrfs/XFS, not ext4), and edge-case behavior (failure modes, metadata preservation on fallback) varies across OS versions. We optimize for easy to understand over minimal: one tool (`rsync`), one behavior, no platform detection. The marker-based skip also makes CoW redundant for the common case — steady-state restores are constant-time work, and version bumps (the only case CoW would help) are rare and take seconds.
 
 ## Usage
 

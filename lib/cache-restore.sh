@@ -14,7 +14,7 @@
 #
 # A marker file (.local-cache-restore) in the target directory records
 # which cache key was last restored.  When the marker matches the
-# current key, the restore is skipped entirely — zero work.  When it
+# current key, the restore is skipped entirely — constant-time work.  When it
 # doesn't match (or is missing, e.g. from a v1 hard-link restore), the
 # target is cleaned and re-synced from the local cache.
 set -e
