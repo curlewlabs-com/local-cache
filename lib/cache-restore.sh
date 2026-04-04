@@ -74,11 +74,11 @@ do_restore() {
         printf '::debug::Target is current (marker matches) — skipping restore\n'
         if [ "$is_exact" = "true" ]; then
             printf 'cache-hit=true\n' >> "$GITHUB_OUTPUT"
-            printf '::notice::Cache hit (exact, skipped): %s (0s)\n' "$matched_key"
+            printf '::notice::Cache hit (exact, skipped): %s (%ds)\n' "$matched_key" "$elapsed"
             append_summary "- **local-cache** \`${matched_key}\` → ✅ Hit (skipped, ${elapsed}s)"
         else
             printf 'cache-hit=false\n' >> "$GITHUB_OUTPUT"
-            printf '::notice::Cache hit (prefix, skipped): %s (0s)\n' "$matched_key"
+            printf '::notice::Cache hit (prefix, skipped): %s (%ds)\n' "$matched_key" "$elapsed"
             append_summary "- **local-cache** \`${matched_key}\` → ⚠️ Prefix hit (skipped, ${elapsed}s)"
         fi
         printf 'cache-matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
@@ -86,6 +86,8 @@ do_restore() {
     fi
 
     # Target is stale, from v1, or doesn't exist — start fresh.
+    # NOTE: concurrent restores to the *same* target path are unsupported.
+    # Each runner must have its own path value (e.g. runner.tool_cache).
     rm -rf "$path_to_cache"
     mkdir -p "$path_to_cache"
     rsync -a "$entry_path/" "$path_to_cache/"
