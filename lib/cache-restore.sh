@@ -94,26 +94,9 @@ do_restore() {
     matched_key="$2"
     is_exact="$3"
 
-    # Clean the target before restoring.  This handles two cases:
-    #   1. Migration from hard-link restores: old files share inodes with
-    #      the cache entry — any modification corrupts the cache.  nlink>1
-    #      is the telltale sign.
-    #   2. Stale content from a previous SDK version that the cache entry
-    #      no longer contains.  cp/rsync overlay without deleting, so
-    #      leftover files would persist silently.
-    # Starting fresh ensures the restored tree exactly matches the entry.
-    if [ -d "$path_to_cache" ]; then
-        sample=$(find "$path_to_cache" -type f 2>/dev/null | head -1 || true)
-        nlink=0
-        if [ -n "$sample" ]; then
-            nlink=$(stat -c '%h' "$sample" 2>/dev/null || stat -f '%l' "$sample" 2>/dev/null || echo 0)
-        fi
-        # Guard against non-numeric stat output.
-        if [ "${nlink:-0}" -gt 1 ] 2>/dev/null; then
-            printf '::warning::Clearing hard-linked restore at %s (migrating to copy-on-write)\n' "$path_to_cache"
-        fi
-        rm -rf "$path_to_cache"
-    fi
+    # Always start fresh.  Removes stale content from a previous version
+    # and any hard-linked files left by the old rsync --link-dest strategy.
+    rm -rf "$path_to_cache"
 
     mkdir -p "$path_to_cache"
     cow_restore "$entry_path" "$path_to_cache"
