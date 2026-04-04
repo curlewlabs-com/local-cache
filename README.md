@@ -2,7 +2,7 @@
 
 Local-disk cache for self-hosted GitHub Actions runners.
 
-A drop-in replacement for [`actions/cache`](https://github.com/actions/cache) that reads and writes a shared directory on the runner's local filesystem instead of GitHub's cloud cache servers. When you run N runners on the same physical machine, they all share one cache — the first runner to encounter a cache miss downloads and stores the content, and every subsequent runner gets an instant local hit.
+A drop-in replacement for [`actions/cache`](https://github.com/actions/cache) that reads and writes a shared directory on the runner's local filesystem instead of GitHub's cloud cache servers. When you run N runners on the same physical machine, they all share one cache — the first runner to encounter a cache miss downloads and stores the content, and every subsequent runner gets a fast local restore.
 
 ## Why
 
@@ -10,11 +10,19 @@ A drop-in replacement for [`actions/cache`](https://github.com/actions/cache) th
 
 Self-hosted runners on the same physical machine make this worse: each runner operates independently, so if you have four runners and a warm cloud cache, you still download the artifact four times per run.
 
-With `local-cache`, the artifact lives on the machine's local disk. On the first cold run, all concurrent runners download independently — there is no mechanism to make later runners wait for the first to finish. One runner saves the result; the others skip the save cleanly via a `mkdir`-based advisory lock that prevents concurrent writes from corrupting the entry. After that initial population, no runner ever downloads again: each restore is an `rsync --link-dest` that creates hard links into the cache directory rather than copying data. Restore time scales with file count rather than data size, so even a 1.8 GB Flutter SDK restores in seconds instead of minutes.
+With `local-cache`, the artifact lives on the machine's local disk. On the first cold run, all concurrent runners download independently — there is no mechanism to make later runners wait for the first to finish. One runner saves the result; the others skip the save cleanly via a `mkdir`-based advisory lock that prevents concurrent writes from corrupting the entry. After that initial population, no runner ever downloads again.
 
 ## How it works
 
-Cache entries are stored as plain directories under `cache-dir/entries/<key>/`. On restore, `rsync --link-dest` creates hard links from the cache entry to the target path (zero-copy on same filesystem, automatic fallback to copy cross-filesystem). On save, content is synced to a temp directory then renamed atomically into place. Concurrent writers are serialized with a `mkdir`-based advisory lock; the second writer skips rather than corrupting the entry.
+Cache entries are stored as plain directories under `cache-dir/entries/<key>/`. On restore, `rsync -a` copies the entry to the target path. A marker file (`.local-cache-restore`) in the target records which key was last restored:
+
+- **Marker matches current key** → restore is skipped entirely (zero work)
+- **Marker missing or different key** → target is cleaned and re-synced from cache
+- **No marker (v1 upgrade)** → treated as stale, cleaned and re-synced
+
+On save, content is synced to a temp directory then renamed atomically into place. Concurrent writers are serialized with a `mkdir`-based advisory lock; the second writer skips rather than corrupting the entry.
+
+**Why not hard links?** v1 used `rsync --link-dest` for zero-copy restores. This is unsafe when multiple runners restore the same entry concurrently: hard links share the same inode, so if one consumer modifies a file (e.g. `flutter` upgrading `engine.version` during setup), the modification corrupts the cache entry for every other consumer.
 
 ## Usage
 
@@ -27,7 +35,7 @@ The restore/save split is intentional: composite actions have no automatic post-
 
 - name: Restore Flutter SDK
   id: flutter-cache
-  uses: curlewlabs-com/local-cache@v1
+  uses: curlewlabs-com/local-cache@v2
   with:
     path: ${{ runner.tool_cache }}/flutter
     key: flutter-${{ steps.flutter-version.outputs.version }}-stable-${{ runner.os }}-${{ runner.arch }}
@@ -42,7 +50,7 @@ The restore/save split is intentional: composite actions have no automatic post-
 
 - name: Save Flutter SDK
   if: steps.flutter-cache.outputs.cache-hit != 'true'
-  uses: curlewlabs-com/local-cache/save@v1
+  uses: curlewlabs-com/local-cache/save@v2
   with:
     path: ${{ runner.tool_cache }}/flutter
     key: flutter-${{ steps.flutter-version.outputs.version }}-stable-${{ runner.os }}-${{ runner.arch }}
@@ -50,7 +58,8 @@ The restore/save split is intentional: composite actions have no automatic post-
 ```
 
 On first run: cache miss → install runs → save populates the shared cache.
-On subsequent runs (any runner on the same machine): cache hit → rsync with hard links → near-instant.
+On subsequent runs (same key): marker matches → restore skipped → instant.
+On version bump: marker differs → clean + rsync → a few seconds.
 
 ### Eliminating the three-step pattern
 
@@ -64,7 +73,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: curlewlabs-com/local-cache@v1
+    - uses: curlewlabs-com/local-cache@v2
       id: cache
       with:
         path: ${{ runner.tool_cache }}/flutter
@@ -76,7 +85,7 @@ runs:
         channel: stable
         cache: false
     - if: steps.cache.outputs.cache-hit != 'true'
-      uses: curlewlabs-com/local-cache/save@v1
+      uses: curlewlabs-com/local-cache/save@v2
       with:
         path: ${{ runner.tool_cache }}/flutter
         key: flutter-${{ inputs.flutter-version }}-stable-${{ runner.os }}-${{ runner.arch }}
@@ -88,7 +97,7 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-vers
 ### Fallback keys
 
 ```yaml
-- uses: curlewlabs-com/local-cache@v1
+- uses: curlewlabs-com/local-cache@v2
   with:
     path: ${{ env.HOME }}/.cargo/registry
     key: cargo-${{ hashFiles('Cargo.lock') }}
@@ -123,6 +132,12 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-vers
 | `key` | Yes | Cache key |
 | `cache-dir` | Yes | Must match the restore step |
 
+## Upgrading from v1
+
+Change `@v1` to `@v2` in your workflow files. No other changes needed.
+
+On the first v2 restore, the target directory is cleaned and re-synced (since v1 left hard-linked files with no marker). After that, restores with the same key are skipped entirely.
+
 ## When not to use this
 
 If the tool respects an environment variable that controls where it stores its cache or installation (e.g. `PUB_CACHE`, `CARGO_HOME`, `BUN_INSTALL_CACHE_DIR`, `GRADLE_USER_HOME`), point that variable at a shared persistent directory instead. Every runner on the machine will use the same live directory with zero copying overhead — no restore or save step needed.
@@ -132,25 +147,25 @@ Use `local-cache` when you cannot control where a tool installs itself. The Flut
 ## Limitations
 
 - **No TTL or eviction.** Cache entries accumulate until manually deleted. For artifacts that change infrequently (e.g. Flutter SDK, updated monthly) this is fine. Clean up with `rm -rf cache-dir/entries/`.
-- **Hard links require same filesystem.** If `cache-dir` is on a different filesystem than `path`, `rsync` falls back to a regular copy automatically. The cache still works, just without the zero-copy benefit.
+- **Each restore is a full copy.** When the marker doesn't match (version bump, first v2 restore), the full artifact is copied from cache to target. For a 1.8 GB Flutter SDK this takes a few seconds on SSD — trivial compared to the network download it replaces.
 - **macOS Spotlight indexing.** On macOS runners, restoring large cache entries (e.g. the Flutter SDK) can trigger `mds` / `mds_stores` to re-index the restored files, causing CPU spikes. Exclude the runner's root directory (or at minimum the `cache-dir`) from Spotlight indexing via System Settings > Spotlight > Privacy, or programmatically with `mdutil -i off /path/to/runner`.
 - **Windows Defender on WSL2.** If your runners run inside WSL2 and you notice CPU spikes from `MsMpEng.exe` after cache restores, Windows Defender may be scanning files written to the WSL2 filesystem. Add the WSL2 distribution's directory to the Defender exclusion list in Windows Security settings.
 - **No GitHub cloud fallback.** Unlike `actions/cache`, there is no network fallback on a local miss. The first run on a new machine always downloads.
-- **Explicit save required.** Composite actions have no automatic post-step hook, so you must call `curlewlabs-com/local-cache/save@v1` explicitly after your install step. A JavaScript action with a `post:` hook would enable a single-step interface, but adds a build step and Node.js dependency that this action avoids by being pure shell.
+- **Explicit save required.** Composite actions have no automatic post-step hook, so you must call `curlewlabs-com/local-cache/save@v2` explicitly after your install step. A JavaScript action with a `post:` hook would enable a single-step interface, but adds a build step and Node.js dependency that this action avoids by being pure shell.
 
 ## Releasing
 
-Users pin to `@v1` (floating major tag). After merging to `main`:
+Users pin to `@v2` (floating major tag). After merging to `main`:
 
 ```sh
-# Move the floating tag so @v1 users get the update.
-git tag -f v1 HEAD
-git push --force origin v1
+# Move the floating tag so @v2 users get the update.
+git tag -f v2 HEAD
+git push --force origin v2
 
 # Create a versioned release for the marketplace.
-git tag v1.x.y HEAD
-git push origin v1.x.y
-gh release create v1.x.y --title "v1.x.y" --notes "changelog here"
+git tag v2.x.y HEAD
+git push origin v2.x.y
+gh release create v2.x.y --title "v2.x.y" --notes "changelog here"
 ```
 
 ## License
