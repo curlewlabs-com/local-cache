@@ -376,3 +376,29 @@ jobs:
           [ "$cached" = "original" ] \
             || (echo "Cache entry corrupted during migration: expected 'original', got '$cached'" && exit 1)
           echo "Hard-link migration: OK"
+
+      - name: Concurrent restores — each consumer gets an isolated copy
+        run: |
+          # Save a shared fixture.
+          mkdir -p /tmp/test-concurrent-restore-src
+          echo "shared" > /tmp/test-concurrent-restore-src/data.txt
+          sh lib/cache-save.sh /tmp/test-concurrent-restore-src concurrent-restore-key /tmp/local-cache
+
+          # Restore into two separate targets concurrently.
+          sh lib/cache-restore.sh /tmp/concurrent-dst-a concurrent-restore-key /tmp/local-cache "" &
+          sh lib/cache-restore.sh /tmp/concurrent-dst-b concurrent-restore-key /tmp/local-cache "" &
+          wait
+
+          # Both targets must exist and contain the correct content.
+          [ "$(cat /tmp/concurrent-dst-a/data.txt)" = "shared" ] \
+            || (echo "Concurrent restore A has wrong content" && exit 1)
+          [ "$(cat /tmp/concurrent-dst-b/data.txt)" = "shared" ] \
+            || (echo "Concurrent restore B has wrong content" && exit 1)
+
+          # Modify one target — the other and the cache entry must be unaffected.
+          echo "modified-a" > /tmp/concurrent-dst-a/data.txt
+          [ "$(cat /tmp/concurrent-dst-b/data.txt)" = "shared" ] \
+            || (echo "Modifying A corrupted B" && exit 1)
+          [ "$(cat /tmp/local-cache/entries/concurrent-restore-key/data.txt)" = "shared" ] \
+            || (echo "Modifying A corrupted cache entry" && exit 1)
+          echo "Concurrent restore isolation: OK"
