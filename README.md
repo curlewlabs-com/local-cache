@@ -14,19 +14,9 @@ With `local-cache`, the artifact lives on the machine's local disk. On the first
 
 ## How it works
 
-Cache entries are stored as plain directories under `cache-dir/entries/<key>/`. On restore, the entry is copied to the target path using copy-on-write where the filesystem supports it:
+Cache entries are stored as plain directories under `cache-dir/entries/<key>/`. On restore, `rsync -a` copies the entry to the target path — a plain local copy that takes seconds even for large artifacts. The value is avoiding the network download, not optimizing the local copy. On save, content is synced to a temp directory then renamed atomically into place. Concurrent writers are serialized with a `mkdir`-based advisory lock; the second writer skips rather than corrupting the entry.
 
-| Filesystem | Strategy | Disk cost | Speed |
-|---|---|---|---|
-| macOS APFS | `cp -cR` (clonefile) | Zero until modified | Instant |
-| Linux Btrfs/XFS | `cp --reflink=auto` | Zero until modified | Instant |
-| Linux ext4 (default WSL2) | `cp -a` (full copy) | Full size | Seconds |
-
-On save, content is synced to a temp directory then renamed atomically into place. Concurrent writers are serialized with a `mkdir`-based advisory lock; the second writer skips rather than corrupting the entry.
-
-**Why not hard links?** An earlier version used `rsync --link-dest` for zero-copy restores. This is unsafe when multiple runners restore the same entry concurrently: hard links share the same inode, so if one consumer modifies a file (e.g. `flutter` upgrading `engine.version` during setup), the modification is visible to every other consumer *and* corrupts the cache entry itself. CoW clones share data blocks until written, then diverge — each consumer gets an isolated copy.
-
-**Upgrading WSL2 to CoW:** The ext4 fallback is safe but uses full disk per restore. To get CoW on WSL2, format the cache partition as Btrfs (`mkfs.btrfs`). The `--reflink=auto` flag will detect it automatically — no code change needed.
+**Why not hard links?** An earlier version used `rsync --link-dest` for zero-copy restores. This is unsafe when multiple runners restore the same entry concurrently: hard links share the same inode, so if one consumer modifies a file (e.g. `flutter` upgrading `engine.version` during setup), the modification is visible to every other consumer *and* corrupts the cache entry itself.
 
 ## Usage
 
@@ -62,7 +52,7 @@ The restore/save split is intentional: composite actions have no automatic post-
 ```
 
 On first run: cache miss → install runs → save populates the shared cache.
-On subsequent runs (any runner on the same machine): cache hit → CoW clone (or copy) → near-instant.
+On subsequent runs (any runner on the same machine): cache hit → local rsync copy → seconds instead of minutes.
 
 ### Eliminating the three-step pattern
 
@@ -144,7 +134,7 @@ Use `local-cache` when you cannot control where a tool installs itself. The Flut
 ## Limitations
 
 - **No TTL or eviction.** Cache entries accumulate until manually deleted. For artifacts that change infrequently (e.g. Flutter SDK, updated monthly) this is fine. Clean up with `rm -rf cache-dir/entries/`.
-- **CoW requires a supporting filesystem.** APFS (macOS) and Btrfs/XFS (Linux) support copy-on-write natively. On ext4 (default WSL2/Ubuntu), restores use a full copy — safe but uses disk proportional to cache size per concurrent restore.
+- **Each restore is a full copy.** Disk usage scales with cache size × concurrent restores. For artifacts that don't change often (Flutter SDK), this is a few GB of local disk — trivial compared to the network time saved.
 - **macOS Spotlight indexing.** On macOS runners, restoring large cache entries (e.g. the Flutter SDK) can trigger `mds` / `mds_stores` to re-index the restored files, causing CPU spikes. Exclude the runner's root directory (or at minimum the `cache-dir`) from Spotlight indexing via System Settings > Spotlight > Privacy, or programmatically with `mdutil -i off /path/to/runner`.
 - **Windows Defender on WSL2.** If your runners run inside WSL2 and you notice CPU spikes from `MsMpEng.exe` after cache restores, Windows Defender may be scanning files written to the WSL2 filesystem. Add the WSL2 distribution's directory to the Defender exclusion list in Windows Security settings.
 - **No GitHub cloud fallback.** Unlike `actions/cache`, there is no network fallback on a local miss. The first run on a new machine always downloads.

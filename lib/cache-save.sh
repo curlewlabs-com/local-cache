@@ -108,27 +108,6 @@ mv "$tmp_entry" "${entries_dir}/${safe_key}"
 
 trap release_lock EXIT INT TERM
 
-# Filesystem capability detection — helps diagnose restore performance.
-# Restores use copy-on-write (APFS clones or reflinks) when available,
-# falling back to a regular copy on ext4 and similar filesystems.
-case "$(uname -s)" in
-    Darwin)
-        printf '::debug::macOS detected — restores will use APFS clones (copy-on-write)\n' ;;
-    Linux)
-        # Test whether the filesystem supports reflinks by cloning a sample file.
-        sample=$(find "${entries_dir}/${safe_key}" -type f 2>/dev/null | head -1 || true)
-        if [ -n "$sample" ]; then
-            reflink_test=$(mktemp "${entries_dir}/.reflink-test-XXXXXX" 2>/dev/null || true)
-            if [ -n "$reflink_test" ] && cp --reflink=always "$sample" "$reflink_test" 2>/dev/null; then
-                printf '::debug::Reflink support detected — restores will use copy-on-write\n'
-            else
-                printf '::debug::No reflink support (ext4 or similar) — restores will use full copy\n'
-            fi
-            rm -f "$reflink_test" 2>/dev/null || true
-        fi ;;
-    *)
-        printf '::debug::Unknown OS — restores will use rsync fallback\n' ;;
-esac
 
 elapsed=$(( $(date +%s) - start_time ))
 size=$(du -sh "${entries_dir}/${safe_key}" 2>/dev/null | cut -f1 || printf '?')

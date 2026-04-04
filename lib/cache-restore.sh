@@ -8,16 +8,13 @@
 #   cache-hit=true|false
 #   cache-matched-key=<key>
 #
-# On a cache hit, the entry is restored using copy-on-write where available:
-#   1. macOS APFS:  cp -cR  (clonefile — instant, zero disk until modified)
-#   2. Linux CoW:   cp -a --reflink=auto  (Btrfs/XFS — same benefit; ext4
-#                   silently falls back to a regular copy)
-#   3. Fallback:    rsync -a  (plain copy — works everywhere)
+# On a cache hit, rsync copies the entry to the target path.  The value
+# of the local cache is avoiding repeated network downloads — the copy
+# itself is a plain local operation (a few seconds for ~1.8 GB).
 #
-# Why not hard links?  Hard links share the same inode data, so a consumer
-# that modifies a restored file (e.g. flutter upgrading engine.version)
-# corrupts the cache entry for every other consumer.  CoW clones share data
-# blocks until written, then diverge — safe for concurrent modification.
+# Why not hard links (rsync --link-dest)?  Hard links share inodes, so
+# a consumer that modifies a restored file (e.g. flutter upgrading
+# engine.version) corrupts the cache entry for every other consumer.
 set -e
 
 path_to_cache="$1"
@@ -47,41 +44,6 @@ sanitize_key() {
     printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '_'
 }
 
-# Restore the cache entry to the target path using the best available
-# copy strategy.  Tries CoW clones first (APFS on macOS, reflink on
-# Linux Btrfs/XFS), then falls back to a plain copy.
-#
-# To upgrade WSL2 runners from plain-copy to CoW: format the cache
-# partition as Btrfs (mkfs.btrfs) — cp --reflink=auto will pick it up
-# automatically with no code change here.
-cow_restore() {
-    src="$1"
-    dst="$2"
-
-    # The "/." suffix copies directory *contents* into dst — without it,
-    # cp creates dst/basename(src)/.
-    case "$(uname -s)" in
-        Darwin)
-            # APFS: cp -cR creates per-file clones via clonefile(2).
-            # Instant, zero additional disk until a file is modified.
-            cp -cR "$src/." "$dst/"
-            printf '::debug::Restored via APFS clone (copy-on-write)\n'
-            ;;
-        Linux)
-            # Btrfs/XFS: --reflink=auto uses ioctl(FICLONE) for CoW.
-            # On ext4 (default WSL2), silently falls back to a regular
-            # copy — no error, just uses disk.
-            cp -a --reflink=auto "$src/." "$dst/"
-            printf '::debug::Restored via cp (reflink=auto)\n'
-            ;;
-        *)
-            # POSIX baseline.  No hard links — see header comment.
-            rsync -a "$src/" "$dst/"
-            printf '::debug::Restored via rsync (plain copy)\n'
-            ;;
-    esac
-}
-
 # SYNC: must match lib/cache-save.sh:append_summary exactly.
 append_summary() {
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
@@ -99,7 +61,7 @@ do_restore() {
     rm -rf "$path_to_cache"
 
     mkdir -p "$path_to_cache"
-    cow_restore "$entry_path" "$path_to_cache"
+    rsync -a "$entry_path/" "$path_to_cache/"
     elapsed=$(( $(date +%s) - start_time ))
     size=$(du -sh "$path_to_cache" 2>/dev/null | cut -f1 || printf '?')
     file_count=$(find "$path_to_cache" -type f | wc -l | tr -d ' ')
