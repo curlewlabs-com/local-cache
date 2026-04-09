@@ -616,6 +616,21 @@ jobs:
           fi
           echo "Phase 1 lock signaling (miss): OK"
 
+      - name: Verify LOCAL_CACHE_HIT in --check steady-state path
+        run: |
+          # The --check path's is_current early return must also write GITHUB_ENV.
+          # First populate a target so the marker exists.
+          sh lib/cache-restore.sh /tmp/two-env-dst-check phase-v1 /tmp/local-cache-2 ""
+
+          # Now run --check against the same target — marker matches, so
+          # this hits the is_current block and should still write GITHUB_ENV.
+          out=$(mktemp)
+          env_out=$(mktemp)
+          GITHUB_OUTPUT="$out" GITHUB_ENV="$env_out" sh lib/cache-restore.sh --check /tmp/two-env-dst-check phase-v1 /tmp/local-cache-2 ""
+          grep "LOCAL_CACHE_HIT=true" "$env_out" || (echo "Expected LOCAL_CACHE_HIT=true in --check steady-state path" && exit 1)
+          grep "LOCAL_CACHE_MATCHED_KEY=phase-v1" "$env_out" || (echo "Expected LOCAL_CACHE_MATCHED_KEY in --check steady-state path" && exit 1)
+          echo "LOCAL_CACHE_HIT in --check steady-state path: OK"
+
       - name: Verify LOCAL_CACHE_HIT environment variable correctness
         run: |
           # 1. Exact Hit

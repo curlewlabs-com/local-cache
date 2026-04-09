@@ -11,6 +11,11 @@
 # Writes to $GITHUB_OUTPUT:
 #   cache-hit=true|false
 #   cache-matched-key=<key>
+#   skip-lock=true          (--check mode only, when target is current)
+#
+# Writes to $GITHUB_ENV (when set):
+#   LOCAL_CACHE_HIT=true|false
+#   LOCAL_CACHE_MATCHED_KEY=<key>
 #
 # On a cache hit, rsync copies the entry to the target path.  The value
 # of the local cache is avoiding repeated network downloads — the copy
@@ -100,7 +105,11 @@ do_restore() {
             append_summary "- **local-cache** \`${matched_key}\` → ⚠️ Prefix hit (skipped, ${elapsed}s)"
         fi
         printf 'cache-matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
-        
+
+        if [ -n "${GITHUB_ENV:-}" ]; then
+            printf 'LOCAL_CACHE_HIT=%s\nLOCAL_CACHE_MATCHED_KEY=%s\n' "$is_exact" "$matched_key" >> "$GITHUB_ENV"
+        fi
+
         if [ "$check_only" = "true" ]; then
             printf 'skip-lock=true\n' >> "$GITHUB_OUTPUT"
         fi
