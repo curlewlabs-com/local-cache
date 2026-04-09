@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   shellcheck:
     runs-on: ubuntu-latest
@@ -18,15 +21,15 @@ jobs:
   # that the standalone `shellcheck` job above does not see. Without this,
   # SC2012 / SC2015 / SC2086 issues in test fixtures slip past CI and only
   # surface when something else (a developer's local actionlint, a code
-  # reviewer) happens to look. The download script pins to actionlint main
-  # in line with how local-mutex's CI does the same check.
+  # reviewer) happens to look. The download script is pinned to a specific
+  # actionlint release commit to avoid supply-chain risk from tracking main.
   actionlint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
       - name: Run actionlint
         run: |
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/914e7df21a07ef503a81201c76d2b11c789d3fca/scripts/download-actionlint.bash) 1.7.12
           ./actionlint -color
 
   integration-test:
