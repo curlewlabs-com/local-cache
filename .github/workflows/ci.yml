@@ -14,6 +14,21 @@ jobs:
       - name: Shellcheck
         run: shellcheck lib/cache-restore.sh lib/cache-save.sh
 
+  # actionlint catches the inline `run:` shell blocks in this very workflow
+  # that the standalone `shellcheck` job above does not see. Without this,
+  # SC2012 / SC2015 / SC2086 issues in test fixtures slip past CI and only
+  # surface when something else (a developer's local actionlint, a code
+  # reviewer) happens to look. The download script pins to actionlint main
+  # in line with how local-mutex's CI does the same check.
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
   integration-test:
     runs-on: ubuntu-latest
     steps:
@@ -123,7 +138,9 @@ jobs:
 
       - name: Verify idempotent save
         run: |
-          count=$(ls /tmp/local-cache/entries/ | wc -l | tr -d ' ')
+          # find ... -mindepth 1 -maxdepth 1 instead of `ls | wc -l` so
+          # weird filenames (newlines, spaces) don't break the count.
+          count=$(find /tmp/local-cache/entries/ -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')
           [ "$count" = "1" ] \
             || (echo "Expected 1 cache entry, found: $count" && exit 1)
           echo "Idempotent save: OK"
