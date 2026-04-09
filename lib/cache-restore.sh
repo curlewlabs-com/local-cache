@@ -2,7 +2,11 @@
 # Called by the composite action's restore step to avoid network round-trips
 # to GitHub's cache servers.
 #
-# Usage: cache-restore.sh <path> <key> <cache-dir> [restore-keys]
+# Usage: cache-restore.sh [flags] <path> <key> <cache-dir> [restore-keys]
+#
+# Flags:
+#   --check: Only verify if the target already possesses the expected key.
+#            If current, it emits metadata and signals 'skip-lock=true'.
 #
 # Writes to $GITHUB_OUTPUT:
 #   cache-hit=true|false
@@ -31,11 +35,16 @@ MARKER_NAME=".local-cache-restore"
 # bump this.
 MARKER_VERSION="v2"
 
+check_only="false"
+if [ "$1" = "--check" ]; then
+    check_only="true"
+    shift
+fi
+
 path_to_cache="$1"
 cache_key="$2"
 cache_dir="$3"
 restore_keys="${4:-}"
-
 
 if [ -z "$path_to_cache" ] || [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
     printf '::error::cache-restore: path, key, and cache-dir must not be empty\n'
@@ -50,7 +59,6 @@ if [ -z "${GITHUB_OUTPUT:-}" ]; then
 fi
 
 entries_dir="${cache_dir}/entries"
-
 start_time=$(date +%s)
 
 # SYNC: must match lib/cache-save.sh:sanitize_key exactly.
@@ -92,6 +100,16 @@ do_restore() {
             append_summary "- **local-cache** \`${matched_key}\` → ⚠️ Prefix hit (skipped, ${elapsed}s)"
         fi
         printf 'cache-matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
+        
+        if [ "$check_only" = "true" ]; then
+            printf 'skip-lock=true\n' >> "$GITHUB_OUTPUT"
+        fi
+        return
+    fi
+
+    # In check-only mode, if we aren't current, we stop here and let the 
+    # serialized step take over.
+    if [ "$check_only" = "true" ]; then
         return
     fi
 
@@ -120,6 +138,10 @@ do_restore() {
         append_summary "- **local-cache** \`${matched_key}\` → ⚠️ Prefix hit (${size}, ${elapsed}s)"
     fi
     printf 'cache-matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
+
+    if [ -n "${GITHUB_ENV:-}" ]; then
+        printf 'LOCAL_CACHE_HIT=%s\nLOCAL_CACHE_MATCHED_KEY=%s\n' "$is_exact" "$matched_key" >> "$GITHUB_ENV"
+    fi
 }
 
 safe_key=$(sanitize_key "$cache_key")
@@ -139,6 +161,7 @@ fi
 
 if [ -d "${entries_dir}/${safe_key}" ]; then
     do_restore "${entries_dir}/${safe_key}" "$cache_key" "true"
+    # If do_restore returned success in check_only mode (meaning skip-lock=true), we exit.
     exit 0
 fi
 
@@ -175,9 +198,18 @@ if [ -n "$restore_keys" ]; then
     fi
 fi
 
+# Miss path (only reached if check_only failed or no match found)
+if [ "$check_only" = "true" ]; then
+    exit 0
+fi
+
 elapsed=$(( $(date +%s) - start_time ))
 printf '::notice::Cache miss: %s\n' "$cache_key"
 printf '::debug::No match found for key or any restore-keys prefix\n'
 append_summary "- **local-cache** \`${cache_key}\` → ❌ Miss (${elapsed}s)"
 printf 'cache-hit=false\n' >> "$GITHUB_OUTPUT"
 printf 'cache-matched-key=\n' >> "$GITHUB_OUTPUT"
+
+if [ -n "${GITHUB_ENV:-}" ]; then
+    printf 'LOCAL_CACHE_HIT=false\nLOCAL_CACHE_MATCHED_KEY=\n' >> "$GITHUB_ENV"
+fi
