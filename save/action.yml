@@ -18,7 +18,9 @@ inputs:
   cache-dir:
     description: >-
       Absolute path to local directory where cache entries are stored. Must
-      match the value used in the restore step. Tilde expansion is not supported.
+      match the value used in the restore step, and must be persistent and
+      shared across all runners on the same machine (e.g. a path outside the
+      per-workspace _work directory). Tilde expansion is not supported.
     required: true
 
 runs:
@@ -32,7 +34,7 @@ runs:
     # machine reboot — which is why local-mutex needs no PID tracking or
     # stale-lock recovery code.
     - name: Save cache
-      uses: curlewlabs-com/local-mutex@v1.0.1
+      uses: curlewlabs-com/local-mutex@v1.0.4
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_KEY: ${{ inputs.key }}

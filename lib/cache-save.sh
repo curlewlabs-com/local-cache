@@ -64,8 +64,10 @@ fi
 # After acquiring the mutex, re-check whether another waiter already populated
 # the entry. If so, exit cleanly — the cache is consistent and we have no work
 # to do. This check is load-bearing: it is the reason waiting on local-mutex is
-# safe, because without it two callers waiting on the same lock would both try
-# to rsync on top of each other once the lock released.
+# safe. Without it, a second caller waking up after the first released the
+# lock would rsync redundantly into its own tmp dir (the tmp path includes $$
+# so the tmp dirs never literally collide) and then fail at the final `mv`
+# because the target entries/<safe_key> already exists.
 if [ -d "${entries_dir}/${safe_key}" ]; then
     printf '::debug::Cache entry already exists, skipping save: %s\n' "$cache_key"
     exit 0

@@ -23,9 +23,12 @@ MARKER_NAME=".local-cache-restore"
 # Marker format version. Bumped when the on-disk layout of either the marker
 # file or the cache entries changes in a backward-incompatible way (e.g. v1
 # used hard links; v2 uses full rsync copies). The marker content is
-# "${MARKER_VERSION}:<entry name>", and a mismatch triggers a clean re-sync.
-# Referenced by literal in .github/workflows/ci.yml marker tests — keep those
-# literals in sync if you bump this.
+# "${MARKER_VERSION}:<matched-key>", where <matched-key> is the same value
+# the action emits as cache-matched-key — the caller's raw (unsanitized) key
+# on an exact hit, or the resolved on-disk entry name on a prefix hit. A
+# mismatch triggers a clean re-sync. Referenced by literal in
+# .github/workflows/ci.yml marker tests — keep those literals in sync if you
+# bump this.
 MARKER_VERSION="v2"
 
 path_to_cache="$1"
