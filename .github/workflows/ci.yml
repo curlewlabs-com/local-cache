@@ -289,51 +289,41 @@ jobs:
             || (echo "Expected path to not exist on dash prefix miss" && exit 1)
           echo "Dash prefix safety: OK"
 
-      - name: Set up concurrent save fixture
+      # Concurrency safety is now provided by curlewlabs-com/local-mutex,
+      # which has its own concurrent-acquire stress tests in its own repo.
+      # The local-cache responsibility under contention is the post-mutex
+      # re-check inside cache-save.sh: if a sibling runner finished saving
+      # the same key while we waited on the lock, the entry already exists
+      # and we exit cleanly rather than rsync-ing on top of it.
+      - name: Set up post-mutex re-check fixture
         run: |
-          mkdir -p /tmp/test-concurrent-a /tmp/test-concurrent-b
-          echo "concurrent-a" > /tmp/test-concurrent-a/h.txt
-          echo "concurrent-b" > /tmp/test-concurrent-b/h.txt
+          mkdir -p /tmp/test-recheck-first /tmp/test-recheck-second
+          echo "first" > /tmp/test-recheck-first/h.txt
+          echo "second" > /tmp/test-recheck-second/h.txt
 
-      - name: Concurrent saves — exactly one should win
-        run: |
-          # Both saves target the same key; the loser should skip cleanly.
-          sh lib/cache-save.sh /tmp/test-concurrent-a concurrent-key /tmp/local-cache &
-          sh lib/cache-save.sh /tmp/test-concurrent-b concurrent-key /tmp/local-cache &
-          wait
-          # Exactly one entry should exist, and it should not be corrupted.
-          test -d /tmp/local-cache/entries/concurrent-key \
-            || (echo "Expected concurrent-key entry to exist" && exit 1)
-          test -f /tmp/local-cache/entries/concurrent-key/h.txt \
-            || (echo "Expected h.txt in concurrent entry" && exit 1)
-          echo "Concurrent save: OK"
+      - name: Save first writer establishes the entry
+        uses: ./save
+        with:
+          path: /tmp/test-recheck-first
+          key: recheck-key
+          cache-dir: /tmp/local-cache
 
-      - name: Stale lock recovery — dead PID is recovered
-        run: |
-          # Create a lock with a PID that does not exist.
-          mkdir -p /tmp/local-cache/.locks/stale-test-key.lock
-          printf '99999999' > /tmp/local-cache/.locks/stale-test-key.lock/pid
-          mkdir -p /tmp/test-stale-source
-          echo "stale" > /tmp/test-stale-source/i.txt
-          sh lib/cache-save.sh /tmp/test-stale-source stale-test-key /tmp/local-cache
-          test -d /tmp/local-cache/entries/stale-test-key \
-            || (echo "Expected stale-test-key entry after recovery" && exit 1)
-          # Lock should be cleaned up.
-          test ! -d /tmp/local-cache/.locks/stale-test-key.lock \
-            || (echo "Expected stale lock to be removed" && exit 1)
-          echo "Stale lock recovery: OK"
+      - name: Save second writer hits the post-mutex re-check and skips
+        uses: ./save
+        with:
+          path: /tmp/test-recheck-second
+          key: recheck-key
+          cache-dir: /tmp/local-cache
 
-      - name: Stale lock recovery — missing PID file is recovered
+      - name: Verify the first writer's content survived
         run: |
-          # Create a lock directory with no PID file (simulates kill between
-          # mkdir and PID write).
-          mkdir -p /tmp/local-cache/.locks/no-pid-key.lock
-          mkdir -p /tmp/test-no-pid-source
-          echo "no-pid" > /tmp/test-no-pid-source/j.txt
-          sh lib/cache-save.sh /tmp/test-no-pid-source no-pid-key /tmp/local-cache
-          test -d /tmp/local-cache/entries/no-pid-key \
-            || (echo "Expected no-pid-key entry after recovery" && exit 1)
-          echo "Stale lock recovery (missing PID): OK"
+          # The post-mutex re-check must let the second save exit before
+          # touching the existing entry — so the first writer's content
+          # is what stays on disk.
+          content=$(cat /tmp/local-cache/entries/recheck-key/h.txt)
+          [ "$content" = "first" ] \
+            || (echo "Post-mutex re-check failed: expected 'first', got '$content'" && exit 1)
+          echo "Post-mutex re-check: OK"
 
       - name: Restore writes v2 marker
         run: |

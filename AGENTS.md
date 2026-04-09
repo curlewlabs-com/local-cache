@@ -7,7 +7,7 @@ A GitHub composite action that provides local-disk caching for self-hosted runne
 ## Rules
 
 - Shell scripts in `lib/` must use `#!/bin/sh` and pass `shellcheck` with no warnings.
-- No external dependencies beyond `rsync`, `sh`, and standard POSIX utilities.
+- No external dependencies beyond `rsync`, `sh`, and standard POSIX utilities. The one published-action dependency is [`curlewlabs-com/local-mutex`](https://github.com/curlewlabs-com/local-mutex), which `save/action.yml` uses to serialize per-key concurrent writers via the kernel's `lockf`/`flock` primitive. Pin local-mutex to a specific patch version (`@v1.0.0`, not `@v1`) per the same hard-pin discipline that applies to every other action reference in the org.
 - The action interface (`action.yml`, `save/action.yml`) must remain compatible with `actions/cache` inputs/outputs (`path`, `key`, `restore-keys`, `cache-hit`, `cache-matched-key`).
 - Every change ships with a test in `.github/workflows/ci.yml`.
 - Tag releases as `v2`, `v3`, etc. (major only). Use floating major tags.

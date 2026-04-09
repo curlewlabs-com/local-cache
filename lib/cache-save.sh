@@ -4,13 +4,20 @@
 #
 # Usage: cache-save.sh <path> <key> <cache-dir>
 #
-# Uses an atomic rename (rsync to temp dir, then mv) so concurrent readers
-# never observe a partial cache entry. Uses mkdir-based advisory locking
-# (POSIX-atomic on all filesystems) so concurrent writers are safe.
+# Concurrency: this script is NOT safe to call directly under contention.
+# The composite action wraps it in curlewlabs-com/local-mutex (per-key
+# lock), and the action is the supported entry point for callers that may
+# run in parallel. Direct invocation is fine for single-process callers
+# (e.g. CI fixtures setting up state for downstream tests).
 #
-# Stale lock recovery: if the lock-holder PID is no longer alive (e.g. killed
-# by OOM killer or machine reboot), the lock is cleared and acquisition is
-# retried once rather than skipping the save permanently.
+# Even under the action's mutex, the script does a post-acquire re-check:
+# if a sibling runner finished saving the same key while we waited on the
+# lock, the entry will already exist and we exit cleanly rather than
+# rsync-ing on top of it. mv would refuse the rename otherwise.
+#
+# Atomic publication: rsync to a temp dir under entries/, then mv into
+# place. Concurrent readers either see the old (or no) entry or the
+# fully-written new one — never a partial directory.
 set -e
 
 path_to_cache="$1"
@@ -24,7 +31,6 @@ if [ -z "$path_to_cache" ] || [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
 fi
 
 entries_dir="${cache_dir}/entries"
-locks_dir="${cache_dir}/.locks"
 
 start_time=$(date +%s)
 
@@ -57,48 +63,10 @@ if [ -d "${entries_dir}/${safe_key}" ]; then
     exit 0
 fi
 
-mkdir -p "$locks_dir"
-lock_dir="${locks_dir}/${safe_key}.lock"
-
-# mkdir is atomic on POSIX filesystems so concurrent runners cannot both win.
-if ! mkdir "$lock_dir" 2>/dev/null; then
-    # Check if the lock-holder is still alive. A SIGKILL, OOM kill, or reboot
-    # leaves a stale lock that would otherwise block saves for this key forever.
-    # Missing PID file (process killed between mkdir and PID write) is treated
-    # the same as a dead PID — the holder is gone either way.
-    stale_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
-    if [ -z "$stale_pid" ] || ! kill -0 "$stale_pid" 2>/dev/null; then
-        # Jittered sleep reduces the chance of two runners racing through
-        # rm + mkdir simultaneously.  The real safety net is the post-lock
-        # re-check at line 91 — if the race is lost, the loser skips.
-        jitter=$(( $$ % 5 + 1 ))
-        printf '::debug::Stale lock detected (PID %s). Waiting %ds before recovery.\n' "${stale_pid:-missing}" "$jitter"
-        sleep "$jitter"
-        rm -rf "$lock_dir"
-        mkdir "$lock_dir" 2>/dev/null || { printf '::debug::Lock contention after stale recovery, skipping: %s\n' "$cache_key"; exit 0; }
-    else
-        printf '::debug::Another process is saving this key, skipping: %s\n' "$cache_key"
-        exit 0
-    fi
-fi
-printf '%s' "$$" > "$lock_dir/pid"
-
-release_lock() {
-    rm -rf "$lock_dir" 2>/dev/null || true
-}
-trap release_lock EXIT INT TERM
-
-# Re-check after acquiring lock (another writer may have finished while we waited).
-if [ -d "${entries_dir}/${safe_key}" ]; then
-    printf '::debug::Cache entry appeared while acquiring lock, skipping save: %s\n' "$cache_key"
-    exit 0
-fi
-
 mkdir -p "$entries_dir"
 tmp_entry="${entries_dir}/.tmp-${safe_key}-$$"
 
 cleanup_tmp() {
-    release_lock
     rm -rf "$tmp_entry" 2>/dev/null || true
 }
 trap cleanup_tmp EXIT INT TERM
@@ -106,8 +74,6 @@ trap cleanup_tmp EXIT INT TERM
 printf '::debug::Saving to local cache: %s\n' "$cache_key"
 rsync -a "${path_to_cache}/" "${tmp_entry}/"
 mv "$tmp_entry" "${entries_dir}/${safe_key}"
-
-trap release_lock EXIT INT TERM
 
 elapsed=$(( $(date +%s) - start_time ))
 size=$(du -sh "${entries_dir}/${safe_key}" 2>/dev/null | cut -f1 || printf '?')
