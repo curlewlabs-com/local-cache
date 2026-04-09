@@ -1,4 +1,4 @@
-name: 'Local Cache (Save)'
+name: 'Runner Local Cache (Save)'
 description: >-
   Save a directory to the local disk cache on self-hosted runners.
   Call this after your install step, conditional on a cache miss from
@@ -32,7 +32,7 @@ runs:
     # machine reboot — which is why local-mutex needs no PID tracking or
     # stale-lock recovery code.
     - name: Save cache
-      uses: curlewlabs-com/local-mutex@v1.0.0
+      uses: curlewlabs-com/local-mutex@v1.0.1
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_KEY: ${{ inputs.key }}

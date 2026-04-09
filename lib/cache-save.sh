@@ -20,6 +20,9 @@
 # fully-written new one — never a partial directory.
 set -e
 
+# SYNC: must match lib/cache-restore.sh:MARKER_NAME exactly.
+MARKER_NAME=".local-cache-restore"
+
 path_to_cache="$1"
 cache_key="$2"
 cache_dir="$3"
@@ -77,7 +80,10 @@ cleanup_tmp() {
 trap cleanup_tmp EXIT INT TERM
 
 printf '::debug::Saving to local cache: %s\n' "$cache_key"
-rsync -a "${path_to_cache}/" "${tmp_entry}/"
+# Exclude the restore marker so a prefix-hit restore followed by save on the
+# same path (restore → install → save, the canonical README pattern) doesn't
+# carry the previous entry's name into the new entry on disk.
+rsync -a --exclude="${MARKER_NAME}" "${path_to_cache}/" "${tmp_entry}/"
 mv "$tmp_entry" "${entries_dir}/${safe_key}"
 
 elapsed=$(( $(date +%s) - start_time ))
