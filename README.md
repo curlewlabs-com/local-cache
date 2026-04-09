@@ -110,7 +110,7 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-vers
     cache-dir: /path/to/shared/cache
 ```
 
-`restore-keys` are tried in order. The most recently modified matching entry wins. A prefix match sets `cache-hit=false` so the save step still runs and updates the entry with the exact key.
+`restore-keys` are tried in order. The first prefix that has any match wins; within that prefix's matches, the most recently modified entry is used. A prefix match sets `cache-hit=false` so the save step still runs and writes a *new* entry under the caller's exact key — the prefix-matched entry is not updated in place, so repeated runs with a rolling exact key produce N separate entries over time (see the "No TTL or eviction" limitation below).
 
 ## Inputs
 
@@ -159,6 +159,7 @@ Use `local-cache` when you cannot control where a tool installs itself. The Flut
 ## Limitations
 
 - **No TTL or eviction.** Cache entries accumulate until manually deleted. For artifacts that change infrequently (e.g. Flutter SDK, updated monthly) this is fine. Clean up with `rm -rf cache-dir/entries/*`.
+- **SIGKILL/OOM can orphan staging directories.** The save step rsyncs into a `.tmp-<key>-<pid>` staging directory under `entries/` and then renames it into place atomically. A normal exit, `INT`, or `TERM` cleans the staging directory up via trap, but `SIGKILL` / OOM kill / power loss between `mkdir` and `mv` leaves the `.tmp-*` directory behind. These are safe — the restore-side prefix match rejects any `.tmp-*` name so they never produce ghost cache hits — but they do consume disk space. If you notice `entries/` growing unexpectedly, sweep them with `rm -rf cache-dir/entries/.tmp-*` during a maintenance window.
 - **Each restore is a full copy.** When the marker doesn't match (version bump, first v2 restore), the full artifact is copied from cache to target. For a 1.8 GB Flutter SDK this takes a few seconds on SSD — trivial compared to the network download it replaces.
 - **macOS Spotlight indexing.** On macOS runners, restoring large cache entries (e.g. the Flutter SDK) can trigger `mds` / `mds_stores` to re-index the restored files, causing CPU spikes. Exclude the runner's root directory (or at minimum the `cache-dir`) from Spotlight indexing via System Settings > Spotlight > Privacy, or programmatically with `mdutil -i off /path/to/runner`.
 - **Windows Defender on WSL2.** If your runners run inside WSL2 and you notice CPU spikes from `MsMpEng.exe` after cache restores, Windows Defender may be scanning files written to the WSL2 filesystem. Add the WSL2 distribution's directory to the Defender exclusion list in Windows Security settings.
