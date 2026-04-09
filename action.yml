@@ -30,7 +30,7 @@ inputs:
 outputs:
   cache-hit:
     description: "'true' if an exact key match was found, 'false' otherwise."
-    # Compatible with both the quick-check step and the serialized restore step.
+    # Phase 1 (check) sets this directly; Phase 2 propagates via output-file.
     value: ${{ steps.check.outputs.cache-hit || steps.restore.outputs.cache-hit }}
   cache-matched-key:
     description: >-
@@ -63,9 +63,9 @@ runs:
     # Phase 2: Serialized Restore / Coordination.
     # If Phase 1 missed or found a stale target, we take a per-key lock
     # via local-mutex to perform the rsync or record a miss.
-    - name: Restore
+    - name: Restore (locked)
       if: steps.check.outputs.skip-lock != 'true'
-      id: restore
+      id: restore-lock
       uses: curlewlabs-com/local-mutex@v1
       env:
         INPUT_PATH: ${{ inputs.path }}
@@ -80,3 +80,12 @@ runs:
             "$INPUT_KEY" \
             "$INPUT_CACHE_DIR" \
             "$INPUT_RESTORE_KEYS"
+
+    # Propagate cache-restore.sh outputs across the composite action
+    # boundary. local-mutex captures them in output-file; we read them
+    # into this step's GITHUB_OUTPUT so the action-level outputs resolve.
+    - name: Propagate restore outputs
+      if: steps.check.outputs.skip-lock != 'true'
+      id: restore
+      shell: sh
+      run: cat "${{ steps.restore-lock.outputs.output-file }}" >> "$GITHUB_OUTPUT"
