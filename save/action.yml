@@ -24,14 +24,28 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    # Concurrent saves of the same key are serialized through local-mutex
+    # so that two runners writing the same entry never collide. The mutex
+    # is per-key (the lock name includes the cache key), so saves of
+    # different keys still run in parallel. The kernel releases the lock
+    # automatically on process death — including SIGKILL, OOM kill, and
+    # machine reboot — which is why local-mutex needs no PID tracking or
+    # stale-lock recovery code.
     - name: Save cache
-      shell: sh
+      uses: curlewlabs-com/local-mutex@v1.0.0
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_KEY: ${{ inputs.key }}
         INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
-      run: |
-        sh "${{ github.action_path }}/../lib/cache-save.sh" \
-          "$INPUT_PATH" \
-          "$INPUT_KEY" \
-          "$INPUT_CACHE_DIR"
+        SAVE_SCRIPT: ${{ github.action_path }}/../lib/cache-save.sh
+      with:
+        # The key is interpolated into the lock name so saves of different
+        # keys do not block each other. local-mutex sanitizes the name
+        # internally (chars outside [a-zA-Z0-9._-] become underscores), so
+        # arbitrary key contents are safe.
+        name: cache-save-${{ inputs.key }}
+        run: |
+          sh "$SAVE_SCRIPT" \
+            "$INPUT_PATH" \
+            "$INPUT_KEY" \
+            "$INPUT_CACHE_DIR"
