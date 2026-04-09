@@ -20,6 +20,13 @@
 set -e
 
 MARKER_NAME=".local-cache-restore"
+# Marker format version. Bumped when the on-disk layout of either the marker
+# file or the cache entries changes in a backward-incompatible way (e.g. v1
+# used hard links; v2 uses full rsync copies). The marker content is
+# "${MARKER_VERSION}:<entry name>", and a mismatch triggers a clean re-sync.
+# Referenced by literal in .github/workflows/ci.yml marker tests — keep those
+# literals in sync if you bump this.
+MARKER_VERSION="v2"
 
 path_to_cache="$1"
 cache_key="$2"
@@ -59,7 +66,7 @@ append_summary() {
 # previous v2 restore.  Returns 0 (true) if the marker matches.
 is_current() {
     marker="${path_to_cache}/${MARKER_NAME}"
-    [ -f "$marker" ] && [ "$(cat "$marker")" = "v2:$1" ]
+    [ -f "$marker" ] && [ "$(cat "$marker")" = "${MARKER_VERSION}:$1" ]
 }
 
 do_restore() {
@@ -93,7 +100,7 @@ do_restore() {
     rsync -a "$entry_path/" "$path_to_cache/"
 
     # Write the v2 marker so future restores with the same key skip.
-    printf 'v2:%s' "$matched_key" > "${path_to_cache}/${MARKER_NAME}"
+    printf '%s:%s' "$MARKER_VERSION" "$matched_key" > "${path_to_cache}/${MARKER_NAME}"
 
     elapsed=$(( $(date +%s) - start_time ))
     size=$(du -sh "$path_to_cache" 2>/dev/null | cut -f1 || printf '?')
@@ -119,8 +126,13 @@ case "$safe_key" in
     .|..) printf '::error::cache-restore: key must not be "." or ".."\n'; exit 1 ;;
 esac
 
-entry_count=$(find "${entries_dir}/" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ' || printf '0')
-printf '::debug::Checking local cache — key: %s, entries: %s\n' "$cache_key" "$entry_count"
+# Only count entries when debug logging is actually on — a production restore
+# that hits the marker-skip happy path must be constant-time work, and the
+# entries dir can hold enough directories that `find | wc -l` is a real cost.
+if [ "${RUNNER_DEBUG:-}" = "1" ]; then
+    entry_count=$(find "${entries_dir}/" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ' || printf '0')
+    printf '::debug::Checking local cache — key: %s, entries: %s\n' "$cache_key" "$entry_count"
+fi
 
 if [ -d "${entries_dir}/${safe_key}" ]; then
     do_restore "${entries_dir}/${safe_key}" "$cache_key" "true"
