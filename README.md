@@ -16,7 +16,7 @@ With `local-cache`, the artifact lives on the machine's local disk. On the first
 
 Cache entries are stored as plain directories under `cache-dir/entries/<key>/`. On restore, `rsync -a` copies the entry to the target path. A marker file (`.local-cache-restore`) in the target records which key was last restored:
 
-- **Marker matches current key** → restore is skipped entirely (constant-time work)
+- **Marker matches the matched entry** → restore is skipped entirely (constant-time work). For prefix matches, "matched entry" is the resolved on-disk entry name, not the caller's `key` input.
 - **Marker missing or different key** → target is cleaned and re-synced from cache
 - **No marker (v1 upgrade)** → treated as stale, cleaned and re-synced
 
@@ -158,7 +158,7 @@ Use `local-cache` when you cannot control where a tool installs itself. The Flut
 
 ## Limitations
 
-- **No TTL or eviction.** Cache entries accumulate until manually deleted. For artifacts that change infrequently (e.g. Flutter SDK, updated monthly) this is fine. Clean up with `rm -rf cache-dir/entries/`.
+- **No TTL or eviction.** Cache entries accumulate until manually deleted. For artifacts that change infrequently (e.g. Flutter SDK, updated monthly) this is fine. Clean up with `rm -rf cache-dir/entries/*`.
 - **Each restore is a full copy.** When the marker doesn't match (version bump, first v2 restore), the full artifact is copied from cache to target. For a 1.8 GB Flutter SDK this takes a few seconds on SSD — trivial compared to the network download it replaces.
 - **macOS Spotlight indexing.** On macOS runners, restoring large cache entries (e.g. the Flutter SDK) can trigger `mds` / `mds_stores` to re-index the restored files, causing CPU spikes. Exclude the runner's root directory (or at minimum the `cache-dir`) from Spotlight indexing via System Settings > Spotlight > Privacy, or programmatically with `mdutil -i off /path/to/runner`.
 - **Windows Defender on WSL2.** If your runners run inside WSL2 and you notice CPU spikes from `MsMpEng.exe` after cache restores, Windows Defender may be scanning files written to the WSL2 filesystem. Add the WSL2 distribution's directory to the Defender exclusion list in Windows Security settings.

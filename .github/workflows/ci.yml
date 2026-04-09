@@ -10,7 +10,7 @@ jobs:
   shellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
       - name: Shellcheck
         run: shellcheck lib/cache-restore.sh lib/cache-save.sh
 
@@ -23,7 +23,7 @@ jobs:
   actionlint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
       - name: Run actionlint
         run: |
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
@@ -32,7 +32,7 @@ jobs:
   integration-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Restore against non-existent cache dir (cold start)
         id: restore-cold
@@ -346,6 +346,9 @@ jobs:
             || (echo "Existing-entry guard failed: expected 'first', got '$content'" && exit 1)
           echo "Sequential idempotent save: OK"
 
+      # The "v2:" prefix in these marker assertions is the canonical marker
+      # version from lib/cache-restore.sh (MARKER_VERSION). If that constant
+      # is ever bumped, the literals below must be bumped in lockstep.
       - name: Restore writes v2 marker
         run: |
           mkdir -p /tmp/test-marker-src
@@ -425,3 +428,66 @@ jobs:
           [ "$(cat /tmp/local-cache/entries/concurrent-restore-key/data.txt)" = "shared" ] \
             || (echo "Modifying A corrupted cache entry" && exit 1)
           echo "Concurrent restore isolation: OK"
+
+      # A second prefix restore against an already-populated target must hit
+      # the marker-skip branch in cache-restore.sh (is_current on the
+      # is_exact="false" path). Existing tests cover exact-hit-skip and
+      # prefix-match-first-time, but not this second-call-is-skipped case —
+      # which is the steady-state behavior for the README's restore → install
+      # → save pattern when the caller's exact key is slightly newer than the
+      # fallback. If this branch regresses, the restore silently starts doing
+      # full rsync work on every invocation instead of constant-time work.
+      - name: Second prefix restore against populated target is a marker-skip
+        run: |
+          mkdir -p /tmp/test-prefix-marker-src
+          echo "v1-content" > /tmp/test-prefix-marker-src/data.txt
+          sh lib/cache-save.sh /tmp/test-prefix-marker-src prefix-marker-v1 /tmp/local-cache
+
+          # First prefix restore populates the target with marker "v2:prefix-marker-v1".
+          # The caller's exact key (v2) doesn't exist; restore-keys "prefix-marker-"
+          # resolves to the only matching entry (v1).
+          sh lib/cache-restore.sh /tmp/test-prefix-marker-dst prefix-marker-v2 /tmp/local-cache "prefix-marker-"
+          marker=$(cat /tmp/test-prefix-marker-dst/.local-cache-restore)
+          [ "$marker" = "v2:prefix-marker-v1" ] \
+            || (echo "Expected marker 'v2:prefix-marker-v1' after first prefix restore, got '$marker'" && exit 1)
+
+          # Modify the restored content — if the second restore skips via
+          # marker-match, this modification survives (no rsync overwrite).
+          # Same pattern as the "Second restore with same key is skipped" test,
+          # but on the prefix-resolution branch.
+          echo "modified-between-restores" > /tmp/test-prefix-marker-dst/data.txt
+          sh lib/cache-restore.sh /tmp/test-prefix-marker-dst prefix-marker-v2 /tmp/local-cache "prefix-marker-"
+          content=$(cat /tmp/test-prefix-marker-dst/data.txt)
+          [ "$content" = "modified-between-restores" ] \
+            || (echo "Second prefix restore did not hit marker-skip: expected 'modified-between-restores', got '$content'" && exit 1)
+          echo "Prefix restore marker-skip: OK"
+
+      # When a caller runs the README's canonical pattern (restore → install
+      # → save on the same path) and the restore was a prefix hit, the target
+      # ends up with a .local-cache-restore marker pointing at the matched
+      # entry. The save step must exclude that marker from the new entry on
+      # disk, or else every cache entry that was ever populated via a prefix
+      # hit permanently carries a stale marker for the entry it was cloned
+      # from. Harmless at runtime but pollutes cache entries with stale
+      # metadata.
+      - name: Save after prefix restore excludes restore marker
+        run: |
+          mkdir -p /tmp/test-save-exclude-src
+          echo "source" > /tmp/test-save-exclude-src/data.txt
+          sh lib/cache-save.sh /tmp/test-save-exclude-src save-exclude-v1 /tmp/local-cache
+
+          # Prefix restore leaves the marker file in the target.
+          sh lib/cache-restore.sh /tmp/test-save-exclude-dst save-exclude-v2 /tmp/local-cache "save-exclude-"
+          [ -f /tmp/test-save-exclude-dst/.local-cache-restore ] \
+            || (echo "Expected marker in target after prefix restore" && exit 1)
+
+          # Save under the caller's exact key. The new entry must not contain
+          # the stale marker from the prefix hit.
+          sh lib/cache-save.sh /tmp/test-save-exclude-dst save-exclude-v2 /tmp/local-cache
+          [ -d /tmp/local-cache/entries/save-exclude-v2 ] \
+            || (echo "Expected new entry save-exclude-v2" && exit 1)
+          [ ! -f /tmp/local-cache/entries/save-exclude-v2/.local-cache-restore ] \
+            || (echo "rsync did not exclude marker — new entry contains stale marker from prefix source" && exit 1)
+          [ -f /tmp/local-cache/entries/save-exclude-v2/data.txt ] \
+            || (echo "Expected data.txt in new entry" && exit 1)
+          echo "Save excludes restore marker: OK"
