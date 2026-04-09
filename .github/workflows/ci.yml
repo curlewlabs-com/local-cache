@@ -286,6 +286,46 @@ jobs:
             || (echo "Expected .. key restore to fail but it succeeded" && exit 1)
           echo "Double-dot key restore rejection: OK"
 
+      # Save-side dot-key rejection must be exercised directly. If the guard
+      # in cache-save.sh were removed, `./save` with key="." would fall through
+      # to mkdir+rsync+mv against entries/., corrupting the entries directory.
+      # The restore-side guard above does not catch a regression in the save
+      # script, so we need a dedicated save-side test.
+      - name: Set up save-dot-key fixture
+        run: |
+          mkdir -p /tmp/test-save-dot-src
+          echo "save-dot" > /tmp/test-save-dot-src/data.txt
+
+      - name: Dot-key save is rejected
+        id: save-dot
+        continue-on-error: true
+        uses: ./save
+        with:
+          path: /tmp/test-save-dot-src
+          key: "."
+          cache-dir: /tmp/local-cache
+
+      - name: Verify dot-key save was rejected
+        run: |
+          [ "${{ steps.save-dot.outcome }}" = "failure" ] \
+            || (echo "Expected dot-key save to fail but it succeeded" && exit 1)
+          echo "Dot-key save rejection: OK"
+
+      - name: Double-dot key save is rejected
+        id: save-dotdot
+        continue-on-error: true
+        uses: ./save
+        with:
+          path: /tmp/test-save-dot-src
+          key: ".."
+          cache-dir: /tmp/local-cache
+
+      - name: Verify double-dot key save was rejected
+        run: |
+          [ "${{ steps.save-dotdot.outcome }}" = "failure" ] \
+            || (echo "Expected .. key save to fail but it succeeded" && exit 1)
+          echo "Double-dot key save rejection: OK"
+
       - name: Dash-prefix restore-key is handled safely
         id: restore-dash-prefix
         uses: ./
