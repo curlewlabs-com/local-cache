@@ -30,18 +30,22 @@ inputs:
 outputs:
   cache-hit:
     description: "'true' if an exact key match was found, 'false' otherwise."
-    value: ${{ steps.restore.outputs.cache-hit }}
+    # We use the environment variable to capture the result from either step.
+    value: ${{ env.LOCAL_CACHE_HIT }}
   cache-matched-key:
     description: >-
       The key that was actually restored. Equal to 'key' on an exact hit;
       the matched entry name on a prefix hit; empty on a miss.
-    value: ${{ steps.restore.outputs.cache-matched-key }}
+    value: ${{ env.LOCAL_CACHE_MATCHED_KEY }}
 
 runs:
   using: 'composite'
   steps:
-    - name: Restore cache
-      id: restore
+    # Steady-state: parallel quick check.
+    # If the target already possesses the requested key, we finish here
+    # without any serialization overhead.
+    - name: Quick check
+      id: check
       shell: sh
       env:
         INPUT_PATH: ${{ inputs.path }}
@@ -50,7 +54,29 @@ runs:
         INPUT_RESTORE_KEYS: ${{ inputs.restore-keys }}
       run: |
         sh "${{ github.action_path }}/lib/cache-restore.sh" \
+          --check \
           "$INPUT_PATH" \
           "$INPUT_KEY" \
           "$INPUT_CACHE_DIR" \
           "$INPUT_RESTORE_KEYS"
+
+    # Cache miss: serialized restore / coordination.
+    # Missed the cache or found a stale target, take a per-key lock and perform the rsync from the local cache.
+    # If no local cache is present, this step will perform a first run operation + save.
+    # This ensures we don't restore while another runner is performing a save for the same key.
+    - name: Restore
+      if: steps.check.outputs.skip-lock != 'true'
+      uses: curlewlabs-com/local-mutex@v1
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_KEY: ${{ inputs.key }}
+        INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
+        INPUT_RESTORE_KEYS: ${{ inputs.restore-keys }}
+      with:
+        name: cache-save-${{ inputs.key }}
+        run: |
+          sh "${{ github.action_path }}/lib/cache-restore.sh" \
+            "$INPUT_PATH" \
+            "$INPUT_KEY" \
+            "$INPUT_CACHE_DIR" \
+            "$INPUT_RESTORE_KEYS"
