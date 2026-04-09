@@ -252,6 +252,12 @@ jobs:
         run: |
           [ "${{ steps.restore-sanitized.outputs.cache-hit }}" = "true" ] \
             || (echo "Expected cache-hit=true for sanitized key, got: ${{ steps.restore-sanitized.outputs.cache-hit }}" && exit 1)
+          # cache-matched-key on an exact hit must be the caller's raw
+          # (unsanitized) original key, not the on-disk directory name. A
+          # regression that emitted safe_key here (cache-restore.sh do_restore
+          # call on the exact-hit path) would slip past a content check.
+          [ "${{ steps.restore-sanitized.outputs.cache-matched-key }}" = "my/special:key@v1" ] \
+            || { echo "Expected raw key on exact hit, got: ${{ steps.restore-sanitized.outputs.cache-matched-key }}"; exit 1; }
           diff -x .local-cache-restore /tmp/local-cache/entries/my_special_key_v1 /tmp/test-restore-sanitized \
             || (echo "Sanitized-key restore content mismatch" && exit 1)
           echo "Sanitized key restore: OK"
@@ -286,11 +292,19 @@ jobs:
             || (echo "Expected .. key restore to fail but it succeeded" && exit 1)
           echo "Double-dot key restore rejection: OK"
 
-      # Save-side dot-key rejection must be exercised directly. If the guard
-      # in cache-save.sh were removed, `./save` with key="." would fall through
-      # to mkdir+rsync+mv against entries/., corrupting the entries directory.
-      # The restore-side guard above does not catch a regression in the save
-      # script, so we need a dedicated save-side test.
+      # Save-side dot/dotdot key rejection must be exercised directly. The
+      # restore-side guard above does not catch a regression in the save
+      # script, so we need a dedicated save-side test. Without the guard,
+      # the two cases behave differently:
+      #   key=".":  `mv tmp entries/.` fails with "are identical" on both
+      #             BSD and GNU mv. Annoying but not corrupting — the
+      #             staging dir survives (trap cleans it up on normal
+      #             exit) and the entries directory is untouched.
+      #   key="..": `mv tmp entries/..` silently leaks the staging dir
+      #             into the parent of entries/, polluting whatever lives
+      #             alongside the cache dir.
+      # Either way the behavior is undefined from the caller's perspective,
+      # so we reject both at the top of cache-save.sh.
       - name: Set up save-dot-key fixture
         run: |
           mkdir -p /tmp/test-save-dot-src
@@ -347,15 +361,21 @@ jobs:
           echo "Dash prefix safety: OK"
 
       # Sequential idempotent save: verify that a save against an already-
-      # populated entry exits cleanly without overwriting the existing content.
+      # populated entry exits cleanly without touching the existing content.
       # This does NOT exercise parallel mutex contention — real contention is
       # tested by curlewlabs-com/local-mutex in its own repo. What it does
       # exercise is the re-check inside cache-save.sh that makes the waiter
       # path safe: once the entry exists, a second caller (whether arriving
       # after a lock release or just running later in the same job) must
-      # detect the existing entry and skip the rsync+mv entirely. If that
-      # guard regressed, this test would catch the second writer clobbering
-      # the first writer's content.
+      # detect the existing entry and skip the rsync+mv entirely. The
+      # regression this guards is NOT clobbering — it is nesting. POSIX
+      # `mv src dest` where dest is an existing directory moves src to
+      # dest/basename(src) rather than failing, so a removed re-check would
+      # leave the second writer's staging dir nested as
+      # entries/<key>/.tmp-<key>-<pid>/ alongside the first writer's top-
+      # level files. The content check alone would not catch this (the
+      # top-level file still reads "first"), so we also assert that no
+      # nested .tmp-* staging subdir survived the second save.
       - name: Set up idempotent-save fixture
         run: |
           mkdir -p /tmp/test-idempotent-first /tmp/test-idempotent-second
@@ -384,6 +404,13 @@ jobs:
           content=$(cat /tmp/local-cache/entries/idempotent-key/h.txt)
           [ "$content" = "first" ] \
             || (echo "Existing-entry guard failed: expected 'first', got '$content'" && exit 1)
+          # The content check above would still pass if the guard regressed,
+          # because the second writer's content gets nested inside the entry
+          # rather than overwriting the top-level file. Assert that no nested
+          # staging dir survived: this is what actually catches a removed
+          # re-check guard.
+          test -z "$(find /tmp/local-cache/entries/idempotent-key -mindepth 1 -maxdepth 1 -name '.tmp-*')" \
+            || { echo "Re-check regressed: found nested staging dir inside entry"; exit 1; }
           echo "Sequential idempotent save: OK"
 
       # The "v2:" prefix in these marker assertions is the canonical marker
