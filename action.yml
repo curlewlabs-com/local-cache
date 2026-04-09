@@ -30,18 +30,22 @@ inputs:
 outputs:
   cache-hit:
     description: "'true' if an exact key match was found, 'false' otherwise."
-    value: ${{ steps.restore.outputs.cache-hit }}
+    # Phase 1 (check) sets this directly; Phase 2 propagates via output-file.
+    value: ${{ steps.check.outputs.cache-hit || steps.restore.outputs.cache-hit }}
   cache-matched-key:
     description: >-
       The key that was actually restored. Equal to 'key' on an exact hit;
       the matched entry name on a prefix hit; empty on a miss.
-    value: ${{ steps.restore.outputs.cache-matched-key }}
+    value: ${{ steps.check.outputs.cache-matched-key || steps.restore.outputs.cache-matched-key }}
 
 runs:
   using: 'composite'
   steps:
-    - name: Restore cache
-      id: restore
+    # Phase 1: Parallel Quick Check.
+    # If the target already possesses the requested key (steady state), we
+    # finish here in parallel without any serialization overhead.
+    - name: Quick check
+      id: check
       shell: sh
       env:
         INPUT_PATH: ${{ inputs.path }}
@@ -50,7 +54,38 @@ runs:
         INPUT_RESTORE_KEYS: ${{ inputs.restore-keys }}
       run: |
         sh "${{ github.action_path }}/lib/cache-restore.sh" \
+          --check \
           "$INPUT_PATH" \
           "$INPUT_KEY" \
           "$INPUT_CACHE_DIR" \
           "$INPUT_RESTORE_KEYS"
+
+    # Phase 2: Serialized Restore / Coordination.
+    # If Phase 1 missed or found a stale target, we take a per-key lock
+    # via local-mutex to perform the rsync or record a miss.
+    - name: Restore (locked)
+      if: steps.check.outputs.skip-lock != 'true'
+      id: restore-lock
+      uses: curlewlabs-com/local-mutex@v1
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_KEY: ${{ inputs.key }}
+        INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
+        INPUT_RESTORE_KEYS: ${{ inputs.restore-keys }}
+      with:
+        name: cache-save-${{ inputs.key }}
+        run: |
+          sh "${{ github.action_path }}/lib/cache-restore.sh" \
+            "$INPUT_PATH" \
+            "$INPUT_KEY" \
+            "$INPUT_CACHE_DIR" \
+            "$INPUT_RESTORE_KEYS"
+
+    # Propagate cache-restore.sh outputs across the composite action
+    # boundary. local-mutex captures them in output-file; we read them
+    # into this step's GITHUB_OUTPUT so the action-level outputs resolve.
+    - name: Propagate restore outputs
+      if: steps.check.outputs.skip-lock != 'true'
+      id: restore
+      shell: sh
+      run: cat "${{ steps.restore-lock.outputs.output-file }}" >> "$GITHUB_OUTPUT"
