@@ -30,20 +30,20 @@ inputs:
 outputs:
   cache-hit:
     description: "'true' if an exact key match was found, 'false' otherwise."
-    # We use the environment variable to capture the result from either step.
-    value: ${{ env.LOCAL_CACHE_HIT }}
+    # Compatible with both the quick-check step and the serialized restore step.
+    value: ${{ steps.check.outputs.cache-hit || steps.restore.outputs.cache-hit }}
   cache-matched-key:
     description: >-
       The key that was actually restored. Equal to 'key' on an exact hit;
       the matched entry name on a prefix hit; empty on a miss.
-    value: ${{ env.LOCAL_CACHE_MATCHED_KEY }}
+    value: ${{ steps.check.outputs.cache-matched-key || steps.restore.outputs.cache-matched-key }}
 
 runs:
   using: 'composite'
   steps:
-    # Steady-state: parallel quick check.
-    # If the target already possesses the requested key, we finish here
-    # without any serialization overhead.
+    # Phase 1: Parallel Quick Check.
+    # If the target already possesses the requested key (steady state), we
+    # finish here in parallel without any serialization overhead.
     - name: Quick check
       id: check
       shell: sh
@@ -60,12 +60,12 @@ runs:
           "$INPUT_CACHE_DIR" \
           "$INPUT_RESTORE_KEYS"
 
-    # Cache miss: serialized restore / coordination.
-    # Missed the cache or found a stale target, take a per-key lock and perform the rsync from the local cache.
-    # If no local cache is present, this step will perform a first run operation + save.
-    # This ensures we don't restore while another runner is performing a save for the same key.
+    # Phase 2: Serialized Restore / Coordination.
+    # If Phase 1 missed or found a stale target, we take a per-key lock
+    # via local-mutex to perform the rsync or record a miss.
     - name: Restore
       if: steps.check.outputs.skip-lock != 'true'
+      id: restore
       uses: curlewlabs-com/local-mutex@v1
       env:
         INPUT_PATH: ${{ inputs.path }}
