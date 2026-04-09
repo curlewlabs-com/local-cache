@@ -10,7 +10,7 @@ A drop-in replacement for [`actions/cache`](https://github.com/actions/cache) th
 
 Self-hosted runners on the same physical machine make this worse: each runner operates independently, so if you have four runners and a warm cloud cache, you still download the artifact four times per run.
 
-With `local-cache`, the artifact lives on the machine's local disk. On the first cold run, all concurrent runners download independently — there is no mechanism to make later runners wait for the first to finish. One runner saves the result; the others skip the save cleanly via a `mkdir`-based advisory lock that prevents concurrent writes from corrupting the entry. After that initial population, no runner ever downloads again.
+With `local-cache`, the artifact lives on the machine's local disk. On the first cold run, all concurrent runners download independently — there is no mechanism to make later runners wait for the first to finish. The save step serializes concurrent writers per-key via [`curlewlabs-com/local-mutex`](https://github.com/curlewlabs-com/local-mutex), so two runners cannot corrupt the same entry; the second writer hits a post-acquire re-check, sees the entry already exists, and exits cleanly. After that initial population, no runner ever downloads again.
 
 ## How it works
 
@@ -20,7 +20,7 @@ Cache entries are stored as plain directories under `cache-dir/entries/<key>/`. 
 - **Marker missing or different key** → target is cleaned and re-synced from cache
 - **No marker (v1 upgrade)** → treated as stale, cleaned and re-synced
 
-On save, content is synced to a temp directory then renamed atomically into place. Concurrent writers are serialized with a `mkdir`-based advisory lock; the second writer skips rather than corrupting the entry.
+On save, content is synced to a temp directory then renamed atomically into place. Concurrent writers of the same key are serialized through [`curlewlabs-com/local-mutex`](https://github.com/curlewlabs-com/local-mutex) (`lockf`/`flock` under the hood, kernel-managed cleanup on process death). The second writer waits for the first to finish, then re-checks and exits cleanly because the entry now exists. Saves of *different* keys still run in parallel — the lock is per-key.
 
 **Why clean-before-restore matters:** The `rm -rf` before each restore is deliberate — it prevents stale content from accumulating across version bumps. Without it, tools that install new versions alongside old ones (e.g. `subosito/flutter-action` in `runner.tool_cache`) would cause the save step to capture every version ever installed, growing the cache entry without bound. The clean restore ensures the target only ever contains what the cache entry has plus what the current install step adds — nothing from previous versions survives.
 
