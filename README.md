@@ -20,6 +20,8 @@ Cache entries are stored as plain directories under `cache-dir/entries/<key>/`. 
 - **Marker missing or different key** → target is cleaned and re-synced from cache
 - **No marker (v1 upgrade)** → treated as stale, cleaned and re-synced
 
+**Two-phase restore:** The restore step runs in two phases. Phase 1 checks the marker in parallel with no locking — if the target is already current, the restore finishes immediately. If not, Phase 2 acquires a per-key lock (shared with the save step via [`curlewlabs-com/local-mutex`](https://github.com/curlewlabs-com/local-mutex)) and performs the full rsync. This means steady-state restores (the common case) never contend on the lock, while cold-start restores serialize against each other and against concurrent saves of the same key.
+
 On save, content is synced to a temp directory then renamed atomically into place. Concurrent writers of the same key are serialized through [`curlewlabs-com/local-mutex`](https://github.com/curlewlabs-com/local-mutex) (`lockf`/`flock` under the hood, kernel-managed cleanup on process death). The second writer waits for the first to finish, then re-checks and exits cleanly because the entry now exists. Saves of *different* keys still run in parallel — the lock is per-key.
 
 **Why clean-before-restore matters:** The `rm -rf` on every re-sync (i.e. whenever the marker is missing or points at a different key) is deliberate — it prevents stale content from accumulating across version bumps. Without it, tools that install new versions alongside old ones (e.g. `subosito/flutter-action` in `runner.tool_cache`) would cause the save step to capture every version ever installed, growing the cache entry without bound. The clean re-sync ensures the target only ever contains what the cache entry has plus what the current install step adds — nothing from previous versions survives.
@@ -127,6 +129,17 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-vers
 |--------|-------------|
 | `cache-hit` | `true` if an exact key match was found |
 | `cache-matched-key` | Key that was actually restored (empty on miss). For prefix matches, this is the sanitized on-disk directory name, not the original key. |
+
+### Environment variables
+
+The restore step also sets these variables via `$GITHUB_ENV` for use in subsequent steps:
+
+| Variable | Description |
+|----------|-------------|
+| `LOCAL_CACHE_HIT` | Same as `cache-hit` — `true` on exact match, `false` otherwise |
+| `LOCAL_CACHE_MATCHED_KEY` | Same as `cache-matched-key` |
+
+These are a convenience for steps that cannot easily reference action outputs (e.g. scripts in a separate composite action).
 
 ## Save inputs
 

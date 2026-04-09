@@ -558,3 +558,110 @@ jobs:
           [ -f /tmp/local-cache/entries/save-exclude-v2/data.txt ] \
             || (echo "Expected data.txt in new entry" && exit 1)
           echo "Save excludes restore marker: OK"
+
+      # Verify the two-phase restore logic introduced for parallel hits
+      - name: Set up two-phase logic fixture
+        run: |
+          mkdir -p /tmp/two-phase-src
+          echo "phase-data" > /tmp/two-phase-src/data.txt
+          sh lib/cache-save.sh /tmp/two-phase-src phase-v1 /tmp/local-cache-2
+
+      - name: Phase 1 (Quick Check) reports skip-lock for steady-state exact hit
+        run: |
+          # 1. Populate the target with the exact key
+          sh lib/cache-restore.sh /tmp/two-phase-dst phase-v1 /tmp/local-cache-2 ""
+          
+          # 2. Run Phase 1 check
+          out=$(mktemp)
+          GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --check /tmp/two-phase-dst phase-v1 /tmp/local-cache-2 ""
+          
+          # 3. Verify skip-lock is emitted
+          grep "skip-lock=true" "$out" || (echo "Expected skip-lock=true for steady-state exact hit" && exit 1)
+          echo "Phase 1 skip-lock (exact hit): OK"
+
+      - name: Phase 1 (Quick Check) reports skip-lock for steady-state prefix hit
+        run: |
+          # 1. Populate target with phase-v1
+          sh lib/cache-restore.sh /tmp/two-phase-dst-prefix phase-v1 /tmp/local-cache-2 ""
+          
+          # 2. Run check with key phase-v2 and restore-keys phase-v1
+          out=$(mktemp)
+          GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --check /tmp/two-phase-dst-prefix phase-v2 /tmp/local-cache-2 "phase-"
+          
+          # 3. Verify skip-lock is emitted (target already has the matched content)
+          grep "skip-lock=true" "$out" || (echo "Expected skip-lock=true for steady-state prefix hit" && exit 1)
+          echo "Phase 1 skip-lock (prefix hit): OK"
+
+      - name: Phase 1 (Quick Check) signals lock for cold prefix hit
+        run: |
+          # 1. Cache has phase-v1. Target is EMPTY.
+          # 2. Run check with key phase-v2 and restore-keys phase-v1
+          out=$(mktemp)
+          GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --check /tmp/two-phase-dst-cold-prefix phase-v2 /tmp/local-cache-2 "phase-"
+          
+          # 3. Verify skip-lock is NOT emitted (rsync is required)
+          if grep "skip-lock=true" "$out"; then
+            echo "Expected no skip-lock for cold prefix hit" && exit 1
+          fi
+          echo "Phase 1 lock signaling (cold prefix hit): OK"
+
+      - name: Phase 1 (Quick Check) signals lock required for miss
+        run: |
+          out=$(mktemp)
+          GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --check /tmp/two-phase-dst-miss phase-miss /tmp/local-cache-2 ""
+          
+          # Verify skip-lock is NOT emitted
+          if grep "skip-lock=true" "$out"; then
+            echo "Expected no skip-lock for miss" && exit 1
+          fi
+          echo "Phase 1 lock signaling (miss): OK"
+
+      - name: Verify LOCAL_CACHE_HIT in --check steady-state path
+        run: |
+          # The --check path's is_current early return must also write GITHUB_ENV.
+          # First populate a target so the marker exists.
+          sh lib/cache-restore.sh /tmp/two-env-dst-check phase-v1 /tmp/local-cache-2 ""
+
+          # Now run --check against the same target — marker matches, so
+          # this hits the is_current block and should still write GITHUB_ENV.
+          out=$(mktemp)
+          env_out=$(mktemp)
+          GITHUB_OUTPUT="$out" GITHUB_ENV="$env_out" sh lib/cache-restore.sh --check /tmp/two-env-dst-check phase-v1 /tmp/local-cache-2 ""
+          grep "LOCAL_CACHE_HIT=true" "$env_out" || (echo "Expected LOCAL_CACHE_HIT=true in --check steady-state path" && exit 1)
+          grep "LOCAL_CACHE_MATCHED_KEY=phase-v1" "$env_out" || (echo "Expected LOCAL_CACHE_MATCHED_KEY in --check steady-state path" && exit 1)
+          echo "LOCAL_CACHE_HIT in --check steady-state path: OK"
+
+      - name: Verify LOCAL_CACHE_HIT environment variable correctness
+        run: |
+          # 1. Exact Hit
+          out=$(mktemp)
+          env_out=$(mktemp)
+          GITHUB_OUTPUT="$out" GITHUB_ENV="$env_out" sh lib/cache-restore.sh /tmp/two-env-dst-exact phase-v1 /tmp/local-cache-2 ""
+          grep "LOCAL_CACHE_HIT=true" "$env_out" || (echo "Expected LOCAL_CACHE_HIT=true for exact hit" && exit 1)
+          
+          # 2. Prefix Hit (must be false to trigger save step)
+          out=$(mktemp)
+          env_out=$(mktemp)
+          GITHUB_OUTPUT="$out" GITHUB_ENV="$env_out" sh lib/cache-restore.sh /tmp/two-env-dst-prefix phase-v2 /tmp/local-cache-2 "phase-"
+          grep "LOCAL_CACHE_HIT=false" "$env_out" || (echo "Expected LOCAL_CACHE_HIT=false for prefix hit" && exit 1)
+          
+          # 3. Miss
+          out=$(mktemp)
+          env_out=$(mktemp)
+          GITHUB_OUTPUT="$out" GITHUB_ENV="$env_out" sh lib/cache-restore.sh /tmp/two-env-dst-miss phase-miss /tmp/local-cache-2 ""
+          grep "LOCAL_CACHE_HIT=false" "$env_out" || (echo "Expected LOCAL_CACHE_HIT=false for miss" && exit 1)
+          echo "LOCAL_CACHE_HIT environment logic: OK"
+
+      - name: Verify Full Action Output Mapping
+        id: action-output-test
+        uses: ./
+        with:
+          path: /tmp/two-action-dst
+          key: phase-v1
+          cache-dir: /tmp/local-cache-2
+      
+      - name: Assert Action Outputs
+        run: |
+          [ "${{ steps.action-output-test.outputs.cache-hit }}" = "true" ] || (echo "Action output cache-hit mismatch" && exit 1)
+          [ "${{ steps.action-output-test.outputs.cache-matched-key }}" = "phase-v1" ] || (echo "Action output matched-key mismatch" && exit 1)
+          echo "Action output mapping: OK"
