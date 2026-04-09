@@ -34,7 +34,7 @@ runs:
     # machine reboot — which is why local-mutex needs no PID tracking or
     # stale-lock recovery code.
     - name: Save cache
-      uses: curlewlabs-com/local-mutex@v1.0.4
+      uses: curlewlabs-com/local-mutex@v1
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_KEY: ${{ inputs.key }}
