@@ -592,6 +592,19 @@ jobs:
           grep "skip-lock=true" "$out" || (echo "Expected skip-lock=true for steady-state prefix hit" && exit 1)
           echo "Phase 1 skip-lock (prefix hit): OK"
 
+      - name: Phase 1 (Quick Check) signals lock for cold prefix hit
+        run: |
+          # 1. Cache has phase-v1. Target is EMPTY.
+          # 2. Run check with key phase-v2 and restore-keys phase-v1
+          out=$(mktemp)
+          GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --check /tmp/two-phase-dst-cold-prefix phase-v2 /tmp/local-cache-2 "phase-"
+          
+          # 3. Verify skip-lock is NOT emitted (rsync is required)
+          if grep "skip-lock=true" "$out"; then
+            echo "Expected no skip-lock for cold prefix hit" && exit 1
+          fi
+          echo "Phase 1 lock signaling (cold prefix hit): OK"
+
       - name: Phase 1 (Quick Check) signals lock required for miss
         run: |
           out=$(mktemp)
