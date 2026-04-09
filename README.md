@@ -145,10 +145,10 @@ On the first v2 restore, the target directory is cleaned and re-synced (since v1
 **Purge bloated v1 entries after upgrading.** v1 did not clean the target before restoring, so tools that install new versions alongside old ones (e.g. Flutter) caused the save step to capture every version ever installed. After upgrading to v2, delete the old entries so the next save creates a clean one:
 
 ```sh
-rm -rf /path/to/cache-dir/entries/*
+rm -rf /path/to/cache-dir/entries/* /path/to/cache-dir/entries/.tmp-*
 ```
 
-This forces a one-time cache miss and re-download. Future entries will be clean because v2's restore starts from an empty target.
+The second glob sweeps any orphan staging directories left behind by crashed saves (see the Limitations section below). The default shell glob `*` does not match dotfiles, so both patterns are needed. This forces a one-time cache miss and re-download. Future entries will be clean because v2's restore starts from an empty target.
 
 ## When not to use this
 
