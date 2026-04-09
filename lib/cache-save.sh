@@ -10,10 +10,14 @@
 # run in parallel. Direct invocation is fine for single-process callers
 # (e.g. CI fixtures setting up state for downstream tests).
 #
-# Even under the action's mutex, the script does a post-acquire re-check:
-# if a sibling runner finished saving the same key while we waited on the
-# lock, the entry will already exist and we exit cleanly rather than
-# rsync-ing on top of it. mv would refuse the rename otherwise.
+# Even under the action's mutex, the script does a post-acquire re-check: if
+# a sibling runner finished saving the same key while we waited on the lock,
+# the entry will already exist and we exit cleanly rather than rsync-ing on
+# top of it. Without the re-check, the final `mv` would NOT fail — POSIX mv
+# nests the staging dir inside the existing entry, leaving a corrupted layout
+# (real files at the top level, a ghost .tmp-<key>-<pid>/ subdir alongside
+# them). The mutex serializes the rsync+mv pair; the re-check makes the
+# serialized second caller a clean no-op instead of a corrupting rename.
 #
 # Atomic publication: rsync to a temp dir under entries/, then mv into
 # place. Concurrent readers either see the old (or no) entry or the
@@ -64,10 +68,15 @@ fi
 # After acquiring the mutex, re-check whether another waiter already populated
 # the entry. If so, exit cleanly — the cache is consistent and we have no work
 # to do. This check is load-bearing: it is the reason waiting on local-mutex is
-# safe. Without it, a second caller waking up after the first released the
-# lock would rsync redundantly into its own tmp dir (the tmp path includes $$
-# so the tmp dirs never literally collide) and then fail at the final `mv`
-# because the target entries/<safe_key> already exists.
+# safe. Without it, a second caller waking up after the first released the lock
+# would rsync into its own ".tmp-<safe_key>-$$" staging dir (the $$ disambiguates
+# tmp paths so they never literally collide), then the final `mv` would silently
+# NEST that staging dir inside the existing entry — POSIX `mv src dest` where
+# dest is an existing directory moves src to dest/basename(src) rather than
+# failing. The result is a corrupted entry whose real files live at
+# entries/<safe_key>/ shadowed by a ghost subdirectory
+# entries/<safe_key>/.tmp-<safe_key>-<pid>/ that the EXIT-trap rm -rf can't
+# reach because $tmp_entry no longer names a real path after the mv.
 if [ -d "${entries_dir}/${safe_key}" ]; then
     printf '::debug::Cache entry already exists, skipping save: %s\n' "$cache_key"
     exit 0
