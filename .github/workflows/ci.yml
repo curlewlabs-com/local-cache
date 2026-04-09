@@ -306,41 +306,45 @@ jobs:
             || (echo "Expected path to not exist on dash prefix miss" && exit 1)
           echo "Dash prefix safety: OK"
 
-      # Concurrency safety is now provided by curlewlabs-com/local-mutex,
-      # which has its own concurrent-acquire stress tests in its own repo.
-      # The local-cache responsibility under contention is the post-mutex
-      # re-check inside cache-save.sh: if a sibling runner finished saving
-      # the same key while we waited on the lock, the entry already exists
-      # and we exit cleanly rather than rsync-ing on top of it.
-      - name: Set up post-mutex re-check fixture
+      # Sequential idempotent save: verify that a save against an already-
+      # populated entry exits cleanly without overwriting the existing content.
+      # This does NOT exercise parallel mutex contention — real contention is
+      # tested by curlewlabs-com/local-mutex in its own repo. What it does
+      # exercise is the re-check inside cache-save.sh that makes the waiter
+      # path safe: once the entry exists, a second caller (whether arriving
+      # after a lock release or just running later in the same job) must
+      # detect the existing entry and skip the rsync+mv entirely. If that
+      # guard regressed, this test would catch the second writer clobbering
+      # the first writer's content.
+      - name: Set up idempotent-save fixture
         run: |
-          mkdir -p /tmp/test-recheck-first /tmp/test-recheck-second
-          echo "first" > /tmp/test-recheck-first/h.txt
-          echo "second" > /tmp/test-recheck-second/h.txt
+          mkdir -p /tmp/test-idempotent-first /tmp/test-idempotent-second
+          echo "first" > /tmp/test-idempotent-first/h.txt
+          echo "second" > /tmp/test-idempotent-second/h.txt
 
-      - name: Save first writer establishes the entry
+      - name: Save establishes the entry
         uses: ./save
         with:
-          path: /tmp/test-recheck-first
-          key: recheck-key
+          path: /tmp/test-idempotent-first
+          key: idempotent-key
           cache-dir: /tmp/local-cache
 
-      - name: Save second writer hits the post-mutex re-check and skips
+      - name: Second save against existing entry exits cleanly
         uses: ./save
         with:
-          path: /tmp/test-recheck-second
-          key: recheck-key
+          path: /tmp/test-idempotent-second
+          key: idempotent-key
           cache-dir: /tmp/local-cache
 
       - name: Verify the first writer's content survived
         run: |
-          # The post-mutex re-check must let the second save exit before
+          # The existing-entry guard must let the second save exit before
           # touching the existing entry — so the first writer's content
           # is what stays on disk.
-          content=$(cat /tmp/local-cache/entries/recheck-key/h.txt)
+          content=$(cat /tmp/local-cache/entries/idempotent-key/h.txt)
           [ "$content" = "first" ] \
-            || (echo "Post-mutex re-check failed: expected 'first', got '$content'" && exit 1)
-          echo "Post-mutex re-check: OK"
+            || (echo "Existing-entry guard failed: expected 'first', got '$content'" && exit 1)
+          echo "Sequential idempotent save: OK"
 
       - name: Restore writes v2 marker
         run: |
