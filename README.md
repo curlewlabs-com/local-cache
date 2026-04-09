@@ -8,7 +8,7 @@ A drop-in replacement for [`actions/cache`](https://github.com/actions/cache) th
 
 `actions/cache` stores entries on GitHub's servers. Every restore is a download over the network, and every save is an upload. For large artifacts — the Flutter SDK is ~1.8 GB, a Cargo registry can be hundreds of MB — this costs real time on every run, even when nothing has changed.
 
-Self-hosted runners on the same physical machine make this worse: each runner operates independently, so if you have four runners and a warm cloud cache, you still download the artifact four times per run.
+Self-hosted runners on the same physical machine make this worse: each runner operates independently, so if you have multiple runners and a warm cloud cache, you still download the artifact once per runner per run.
 
 With `local-cache`, the artifact lives on the machine's local disk. On the first cold run, all concurrent runners download independently — there is no mechanism to make later runners wait for the first to finish. The save step serializes concurrent writers per-key via [`curlewlabs-com/local-mutex`](https://github.com/curlewlabs-com/local-mutex), so two runners cannot corrupt the same entry; the second writer hits a post-acquire re-check, sees the entry already exists, and exits cleanly. After that initial population, no runner ever downloads again.
 
