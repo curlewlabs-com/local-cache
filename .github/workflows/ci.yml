@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
       - name: Shellcheck
-        run: shellcheck lib/cache-restore.sh lib/cache-save.sh
+        run: shellcheck lib/cache-common.sh lib/cache-restore.sh lib/cache-save.sh
 
   # actionlint catches the inline `run:` shell blocks in this very workflow
   # that the standalone `shellcheck` job above does not see. Without this,
@@ -33,7 +33,10 @@ jobs:
           ./actionlint -color
 
   integration-test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -70,7 +73,8 @@ jobs:
 
       - name: Verify entry was created
         run: |
-          test -d /tmp/local-cache/entries/test-exact-key || (echo "Entry not found" && exit 1)
+          encoded_key="k-$(printf '%s' 'test-exact-key' | od -An -tx1 -v | tr -d ' \n')"
+          test -d "/tmp/local-cache/entries/${encoded_key}" || (echo "Entry not found" && exit 1)
           echo "Entry exists: OK"
 
       - name: Delete source to prove restore works
@@ -90,7 +94,8 @@ jobs:
             || (echo "Expected cache-hit=true, got: ${{ steps.restore-exact.outputs.cache-hit }}" && exit 1)
           [ "${{ steps.restore-exact.outputs.cache-matched-key }}" = "test-exact-key" ] \
             || (echo "Expected cache-matched-key=test-exact-key, got: ${{ steps.restore-exact.outputs.cache-matched-key }}" && exit 1)
-          diff -x .local-cache-restore /tmp/local-cache/entries/test-exact-key /tmp/test-restore \
+          encoded_key="k-$(printf '%s' 'test-exact-key' | od -An -tx1 -v | tr -d ' \n')"
+          diff -x .local-cache-restore -x .local-cache-key "/tmp/local-cache/entries/${encoded_key}" /tmp/test-restore \
             || (echo "Restored content does not match" && exit 1)
           echo "Exact restore: OK"
 
@@ -108,9 +113,10 @@ jobs:
         run: |
           [ "${{ steps.restore-prefix.outputs.cache-hit }}" = "false" ] \
             || (echo "Expected cache-hit=false for prefix match, got: ${{ steps.restore-prefix.outputs.cache-hit }}" && exit 1)
-          [ -n "${{ steps.restore-prefix.outputs.cache-matched-key }}" ] \
-            || (echo "Expected non-empty cache-matched-key for prefix match" && exit 1)
-          diff -x .local-cache-restore /tmp/local-cache/entries/test-exact-key /tmp/test-restore-prefix \
+          [ "${{ steps.restore-prefix.outputs.cache-matched-key }}" = "test-exact-key" ] \
+            || (echo "Expected raw cache-matched-key=test-exact-key for prefix match, got: ${{ steps.restore-prefix.outputs.cache-matched-key }}" && exit 1)
+          encoded_key="k-$(printf '%s' 'test-exact-key' | od -An -tx1 -v | tr -d ' \n')"
+          diff -x .local-cache-restore -x .local-cache-key "/tmp/local-cache/entries/${encoded_key}" /tmp/test-restore-prefix \
             || (echo "Prefix-restored content does not match" && exit 1)
           echo "Prefix restore: OK"
 
@@ -141,9 +147,11 @@ jobs:
 
       - name: Verify idempotent save
         run: |
-          # find ... -mindepth 1 -maxdepth 1 instead of `ls | wc -l` so
-          # weird filenames (newlines, spaces) don't break the count.
-          count=$(find /tmp/local-cache/entries/ -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')
+          count=0
+          for path in /tmp/local-cache/entries/*; do
+            [ -e "$path" ] || continue
+            count=$((count + 1))
+          done
           [ "$count" = "1" ] \
             || (echo "Expected 1 cache entry, found: $count" && exit 1)
           echo "Idempotent save: OK"
@@ -157,7 +165,8 @@ jobs:
 
       - name: Verify non-existent source was not cached
         run: |
-          [ ! -d /tmp/local-cache/entries/nonexistent-source-key ] \
+          encoded_key="k-$(printf '%s' 'nonexistent-source-key' | od -An -tx1 -v | tr -d ' \n')"
+          [ ! -d "/tmp/local-cache/entries/${encoded_key}" ] \
             || (echo "Expected no entry for non-existent source" && exit 1)
           echo "Non-existent source guard: OK"
 
@@ -188,7 +197,10 @@ jobs:
         run: |
           [ "${{ steps.restore-multi-prefix.outputs.cache-hit }}" = "false" ] \
             || (echo "Expected cache-hit=false for prefix match" && exit 1)
-          diff -x .local-cache-restore /tmp/local-cache/entries/prefix-b-v1 /tmp/test-restore-multi-prefix \
+          [ "${{ steps.restore-multi-prefix.outputs.cache-matched-key }}" = "prefix-b-v1" ] \
+            || (echo "Expected raw matched key prefix-b-v1, got: ${{ steps.restore-multi-prefix.outputs.cache-matched-key }}" && exit 1)
+          encoded_key="k-$(printf '%s' 'prefix-b-v1' | od -An -tx1 -v | tr -d ' \n')"
+          diff -x .local-cache-restore -x .local-cache-key "/tmp/local-cache/entries/${encoded_key}" /tmp/test-restore-multi-prefix \
             || (echo "Multi-prefix restored content does not match" && exit 1)
           echo "Multi-prefix restore: OK"
 
@@ -220,7 +232,10 @@ jobs:
           [ "${{ steps.restore-prefix-order.outputs.cache-hit }}" = "false" ] \
             || (echo "Expected cache-hit=false for prefix match" && exit 1)
           # prefix-a- is listed first and has an entry; it must win over prefix-b-
-          diff -x .local-cache-restore /tmp/local-cache/entries/prefix-a-v1 /tmp/test-restore-prefix-order \
+          [ "${{ steps.restore-prefix-order.outputs.cache-matched-key }}" = "prefix-a-v1" ] \
+            || (echo "Expected raw matched key prefix-a-v1, got: ${{ steps.restore-prefix-order.outputs.cache-matched-key }}" && exit 1)
+          encoded_key="k-$(printf '%s' 'prefix-a-v1' | od -An -tx1 -v | tr -d ' \n')"
+          diff -x .local-cache-restore -x .local-cache-key "/tmp/local-cache/entries/${encoded_key}" /tmp/test-restore-prefix-order \
             || (echo "Expected prefix-a-v1 to win but content does not match" && exit 1)
           echo "First-prefix-wins: OK"
 
@@ -236,14 +251,14 @@ jobs:
           key: "my/special:key@v1"
           cache-dir: /tmp/local-cache
 
-      - name: Verify sanitized entry name on disk
+      - name: Verify encoded entry name on disk
         run: |
-          # "/" ":" "@" must all become "_"; the on-disk name is the sanitized form
-          [ -d "/tmp/local-cache/entries/my_special_key_v1" ] \
-            || (echo "Expected sanitized entry my_special_key_v1 not found" && exit 1)
-          echo "Key sanitization: OK"
+          encoded_key="k-$(printf '%s' 'my/special:key@v1' | od -An -tx1 -v | tr -d ' \n')"
+          [ -d "/tmp/local-cache/entries/${encoded_key}" ] \
+            || (echo "Expected encoded entry ${encoded_key} not found" && exit 1)
+          echo "Key encoding: OK"
 
-      - name: Restore with sanitized key (exact hit)
+      - name: Restore with special-character key (exact hit)
         id: restore-sanitized
         uses: ./
         with:
@@ -251,97 +266,78 @@ jobs:
           key: "my/special:key@v1"
           cache-dir: /tmp/local-cache
 
-      - name: Verify sanitized key restores correctly
+      - name: Verify special-character key restores correctly
         run: |
           [ "${{ steps.restore-sanitized.outputs.cache-hit }}" = "true" ] \
-            || (echo "Expected cache-hit=true for sanitized key, got: ${{ steps.restore-sanitized.outputs.cache-hit }}" && exit 1)
-          # cache-matched-key on an exact hit must be the caller's raw
-          # (unsanitized) original key, not the on-disk directory name. A
-          # regression that emitted safe_key here (cache-restore.sh do_restore
-          # call on the exact-hit path) would slip past a content check.
+            || (echo "Expected cache-hit=true for special-character key, got: ${{ steps.restore-sanitized.outputs.cache-hit }}" && exit 1)
           [ "${{ steps.restore-sanitized.outputs.cache-matched-key }}" = "my/special:key@v1" ] \
             || { echo "Expected raw key on exact hit, got: ${{ steps.restore-sanitized.outputs.cache-matched-key }}"; exit 1; }
-          diff -x .local-cache-restore /tmp/local-cache/entries/my_special_key_v1 /tmp/test-restore-sanitized \
-            || (echo "Sanitized-key restore content mismatch" && exit 1)
-          echo "Sanitized key restore: OK"
+          encoded_key="k-$(printf '%s' 'my/special:key@v1' | od -An -tx1 -v | tr -d ' \n')"
+          diff -x .local-cache-restore -x .local-cache-key "/tmp/local-cache/entries/${encoded_key}" /tmp/test-restore-sanitized \
+            || (echo "Special-character key restore content mismatch" && exit 1)
+          echo "Special-character key restore: OK"
 
-      - name: Dot-key restore is rejected
-        id: restore-dot
-        continue-on-error: true
-        uses: ./
-        with:
-          path: /tmp/test-dot-restore
-          key: "."
-          cache-dir: /tmp/local-cache
-
-      - name: Verify dot-key was rejected
+      - name: Set up dotted-key fixture
         run: |
-          [ "${{ steps.restore-dot.outcome }}" = "failure" ] \
-            || (echo "Expected dot-key restore to fail but it succeeded" && exit 1)
-          echo "Dot-key restore rejection: OK"
+          mkdir -p /tmp/test-dotted-key-src /tmp/test-dotdot-key-src
+          echo "dot" > /tmp/test-dotted-key-src/data.txt
+          echo "dotdot" > /tmp/test-dotdot-key-src/data.txt
 
-      - name: Double-dot key restore is rejected
-        id: restore-dotdot
-        continue-on-error: true
-        uses: ./
-        with:
-          path: /tmp/test-dotdot-restore
-          key: ".."
-          cache-dir: /tmp/local-cache
-
-      - name: Verify double-dot key was rejected
-        run: |
-          [ "${{ steps.restore-dotdot.outcome }}" = "failure" ] \
-            || (echo "Expected .. key restore to fail but it succeeded" && exit 1)
-          echo "Double-dot key restore rejection: OK"
-
-      # Save-side dot/dotdot key rejection must be exercised directly. The
-      # restore-side guard above does not catch a regression in the save
-      # script, so we need a dedicated save-side test. Without the guard,
-      # the two cases behave differently:
-      #   key=".":  `mv tmp entries/.` fails with "are identical" on both
-      #             BSD and GNU mv. Annoying but not corrupting — the
-      #             staging dir survives (trap cleans it up on normal
-      #             exit) and the entries directory is untouched.
-      #   key="..": `mv tmp entries/..` silently leaks the staging dir
-      #             into the parent of entries/, polluting whatever lives
-      #             alongside the cache dir.
-      # Either way the behavior is undefined from the caller's perspective,
-      # so we reject both at the top of cache-save.sh.
-      - name: Set up save-dot-key fixture
-        run: |
-          mkdir -p /tmp/test-save-dot-src
-          echo "save-dot" > /tmp/test-save-dot-src/data.txt
-
-      - name: Dot-key save is rejected
-        id: save-dot
-        continue-on-error: true
+      - name: Dot key round-trips safely
         uses: ./save
         with:
-          path: /tmp/test-save-dot-src
+          path: /tmp/test-dotted-key-src
           key: "."
           cache-dir: /tmp/local-cache
-
-      - name: Verify dot-key save was rejected
+      - name: Verify dot key round-trip
         run: |
-          [ "${{ steps.save-dot.outcome }}" = "failure" ] \
-            || (echo "Expected dot-key save to fail but it succeeded" && exit 1)
-          echo "Dot-key save rejection: OK"
+          encoded_key="k-$(printf '%s' '.' | od -An -tx1 -v | tr -d ' \n')"
+          [ -d "/tmp/local-cache/entries/${encoded_key}" ] \
+            || (echo "Expected encoded dot-key entry ${encoded_key}" && exit 1)
+          sh lib/cache-restore.sh /tmp/test-dotted-key-dst "." /tmp/local-cache ""
+          [ "$(cat /tmp/test-dotted-key-dst/data.txt)" = "dot" ] \
+            || (echo "Expected dot-key restore content" && exit 1)
+          echo "Dot key support: OK"
 
-      - name: Double-dot key save is rejected
-        id: save-dotdot
-        continue-on-error: true
+      - name: Double-dot key round-trips safely
         uses: ./save
         with:
-          path: /tmp/test-save-dot-src
+          path: /tmp/test-dotdot-key-src
           key: ".."
           cache-dir: /tmp/local-cache
-
-      - name: Verify double-dot key save was rejected
+      - name: Verify double-dot key round-trip
         run: |
-          [ "${{ steps.save-dotdot.outcome }}" = "failure" ] \
-            || (echo "Expected .. key save to fail but it succeeded" && exit 1)
-          echo "Double-dot key save rejection: OK"
+          encoded_key="k-$(printf '%s' '..' | od -An -tx1 -v | tr -d ' \n')"
+          [ -d "/tmp/local-cache/entries/${encoded_key}" ] \
+            || (echo "Expected encoded double-dot key entry ${encoded_key}" && exit 1)
+          sh lib/cache-restore.sh /tmp/test-dotdot-key-dst ".." /tmp/local-cache ""
+          [ "$(cat /tmp/test-dotdot-key-dst/data.txt)" = "dotdot" ] \
+            || (echo "Expected double-dot key restore content" && exit 1)
+          echo "Double-dot key support: OK"
+
+      - name: Distinct raw keys with same old sanitized form stay distinct
+        run: |
+          mkdir -p /tmp/test-collision-a /tmp/test-collision-b
+          echo "slash" > /tmp/test-collision-a/data.txt
+          echo "colon" > /tmp/test-collision-b/data.txt
+
+          sh lib/cache-save.sh /tmp/test-collision-a "a/b" /tmp/local-cache
+          sh lib/cache-save.sh /tmp/test-collision-b "a:b" /tmp/local-cache
+
+          encoded_a="k-$(printf '%s' 'a/b' | od -An -tx1 -v | tr -d ' \n')"
+          encoded_b="k-$(printf '%s' 'a:b' | od -An -tx1 -v | tr -d ' \n')"
+          [ -d "/tmp/local-cache/entries/${encoded_a}" ] \
+            || (echo "Missing encoded entry for a/b" && exit 1)
+          [ -d "/tmp/local-cache/entries/${encoded_b}" ] \
+            || (echo "Missing encoded entry for a:b" && exit 1)
+
+          sh lib/cache-restore.sh /tmp/test-collision-out-a "a/b" /tmp/local-cache ""
+          sh lib/cache-restore.sh /tmp/test-collision-out-b "a:b" /tmp/local-cache ""
+          [ "$(cat /tmp/test-collision-out-a/data.txt)" = "slash" ] \
+            || (echo "a/b restored wrong content" && exit 1)
+          [ "$(cat /tmp/test-collision-out-b/data.txt)" = "colon" ] \
+            || (echo "a:b restored wrong content" && exit 1)
+          echo "Key collision regression: OK"
 
       - name: Dash-prefix restore-key is handled safely
         id: restore-dash-prefix
@@ -404,7 +400,8 @@ jobs:
           # The existing-entry guard must let the second save exit before
           # touching the existing entry — so the first writer's content
           # is what stays on disk.
-          content=$(cat /tmp/local-cache/entries/idempotent-key/h.txt)
+          encoded_key="k-$(printf '%s' 'idempotent-key' | od -An -tx1 -v | tr -d ' \n')"
+          content=$(cat "/tmp/local-cache/entries/${encoded_key}/h.txt")
           [ "$content" = "first" ] \
             || (echo "Existing-entry guard failed: expected 'first', got '$content'" && exit 1)
           # The content check above would still pass if the guard regressed,
@@ -412,7 +409,7 @@ jobs:
           # rather than overwriting the top-level file. Assert that no nested
           # staging dir survived: this is what actually catches a removed
           # re-check guard.
-          test -z "$(find /tmp/local-cache/entries/idempotent-key -mindepth 1 -maxdepth 1 -name '.tmp-*')" \
+          test -z "$(find "/tmp/local-cache/entries/${encoded_key}" -name '.tmp-*')" \
             || { echo "Re-check regressed: found nested staging dir inside entry"; exit 1; }
           echo "Sequential idempotent save: OK"
 
@@ -472,7 +469,8 @@ jobs:
         run: |
           sh lib/cache-restore.sh /tmp/test-isolation-dst marker-key /tmp/local-cache ""
           echo "corrupted" > /tmp/test-isolation-dst/data.txt
-          cached=$(cat /tmp/local-cache/entries/marker-key/data.txt)
+          encoded_key="k-$(printf '%s' 'marker-key' | od -An -tx1 -v | tr -d ' \n')"
+          cached=$(cat "/tmp/local-cache/entries/${encoded_key}/data.txt")
           [ "$cached" = "marker-test" ] \
             || (echo "Cache entry corrupted: expected 'marker-test', got '$cached'" && exit 1)
           echo "Restore isolation: OK"
@@ -495,7 +493,8 @@ jobs:
           echo "modified-a" > /tmp/concurrent-dst-a/data.txt
           [ "$(cat /tmp/concurrent-dst-b/data.txt)" = "shared" ] \
             || (echo "Modifying A corrupted B" && exit 1)
-          [ "$(cat /tmp/local-cache/entries/concurrent-restore-key/data.txt)" = "shared" ] \
+          encoded_key="k-$(printf '%s' 'concurrent-restore-key' | od -An -tx1 -v | tr -d ' \n')"
+          [ "$(cat "/tmp/local-cache/entries/${encoded_key}/data.txt")" = "shared" ] \
             || (echo "Modifying A corrupted cache entry" && exit 1)
           echo "Concurrent restore isolation: OK"
 
@@ -554,11 +553,14 @@ jobs:
           # Save under the caller's exact key. The new entry must not contain
           # the stale marker from the prefix hit.
           sh lib/cache-save.sh /tmp/test-save-exclude-dst save-exclude-v2 /tmp/local-cache
-          [ -d /tmp/local-cache/entries/save-exclude-v2 ] \
+          encoded_key="k-$(printf '%s' 'save-exclude-v2' | od -An -tx1 -v | tr -d ' \n')"
+          [ -d "/tmp/local-cache/entries/${encoded_key}" ] \
             || (echo "Expected new entry save-exclude-v2" && exit 1)
-          [ ! -f /tmp/local-cache/entries/save-exclude-v2/.local-cache-restore ] \
+          [ ! -f "/tmp/local-cache/entries/${encoded_key}/.local-cache-restore" ] \
             || (echo "rsync did not exclude marker — new entry contains stale marker from prefix source" && exit 1)
-          [ -f /tmp/local-cache/entries/save-exclude-v2/data.txt ] \
+          [ -f "/tmp/local-cache/entries/${encoded_key}/.local-cache-key" ] \
+            || { echo "Expected metadata file in encoded entry"; exit 1; }
+          [ -f "/tmp/local-cache/entries/${encoded_key}/data.txt" ] \
             || (echo "Expected data.txt in new entry" && exit 1)
           echo "Save excludes restore marker: OK"
 
