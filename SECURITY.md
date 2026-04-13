@@ -12,9 +12,9 @@ Do not open a public issue for security vulnerabilities.
 This action reads and writes cache entries on the runner's local filesystem
 using `rsync` and standard POSIX utilities. The primary security surface is:
 
-- **Key-to-path mapping:** The `key` and `restore-keys` inputs are encoded into
-  collision-free directory names before they are used on disk. This blocks path
-  traversal via cache keys without conflating distinct raw keys such as `a/b`
-  and `a:b`.
+- **Key-to-path mapping:** The `key` and `restore-keys` inputs are hashed
+  (SHA-256) into fixed-length directory names before they are used on disk. This
+  blocks path traversal via cache keys without conflating distinct raw keys such
+  as `a/b` and `a:b`.
 - **File operations:** The action creates, copies, and deletes directories
   under the caller-specified `cache-dir`. It does not access the network.

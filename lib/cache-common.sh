@@ -4,11 +4,17 @@
 MARKER_NAME=".local-cache-restore"
 ENTRY_KEY_NAME=".local-cache-key"
 
-# Encode every byte as hex so distinct raw keys always map to distinct
-# directory names while remaining safe as path components.
+# Map a raw cache key to a fixed-length, filesystem-safe directory name.
+# SHA-256 keeps the output at 66 characters (k- + 64 hex) regardless of
+# input length, avoiding NAME_MAX issues with long keys.
 encode_key() {
-    hex=$(printf '%s' "$1" | od -An -tx1 -v | tr -d ' \n')
-    printf 'k-%s' "$hex"
+    # sha256sum: Linux (GNU coreutils); shasum: macOS / Perl
+    if command -v sha256sum >/dev/null 2>&1; then
+        hash=$(printf '%s' "$1" | sha256sum | cut -d' ' -f1)
+    else
+        hash=$(printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1)
+    fi
+    printf 'k-%s' "$hash"
 }
 
 append_summary() {
