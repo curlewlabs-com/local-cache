@@ -35,7 +35,7 @@ outputs:
   cache-matched-key:
     description: >-
       The key that was actually restored. Equal to 'key' on an exact hit;
-      the matched entry name on a prefix hit; empty on a miss.
+      usually the matched raw key on a prefix hit; empty on a miss.
     value: ${{ steps.check.outputs.cache-matched-key || steps.restore.outputs.cache-matched-key }}
 
 runs:

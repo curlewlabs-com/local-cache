@@ -14,9 +14,9 @@ With `local-cache`, the artifact lives on the machine's local disk. On the first
 
 ## How it works
 
-Cache entries are stored as plain directories under `cache-dir/entries/<key>/`. On restore, `rsync -a` copies the entry to the target path. A marker file (`.local-cache-restore`) in the target records which key was last restored:
+Cache entries are stored as plain directories under `cache-dir/entries/k-<sha256>/`. The directory name is a SHA-256 hash of the caller's raw key (fixed-length, collision-free), and each entry also stores the original key in a small metadata file. On restore, `rsync -a` copies the entry contents to the target path. A marker file (`.local-cache-restore`) in the target records which key was last restored:
 
-- **Marker matches the matched entry** → restore is skipped entirely (constant-time work). For prefix matches, "matched entry" is the resolved on-disk entry name, not the caller's `key` input.
+- **Marker matches the matched entry** → restore is skipped entirely (constant-time work). For prefix matches, "matched entry" is the resolved cache key for newly saved entries, and the legacy directory name when restoring an older pre-encoding entry.
 - **Marker missing or different key** → target is cleaned and re-synced from cache
 - **No marker (v1 upgrade)** → treated as stale, cleaned and re-synced
 
@@ -41,7 +41,7 @@ The restore/save split is intentional: composite actions have no automatic post-
 
 - name: Restore Flutter SDK
   id: flutter-cache
-  uses: curlewlabs-com/local-cache@v2
+  uses: curlewlabs-com/local-cache@v3
   with:
     path: ${{ runner.tool_cache }}/flutter
     key: flutter-${{ steps.flutter-version.outputs.version }}-stable-${{ runner.os }}-${{ runner.arch }}
@@ -56,7 +56,7 @@ The restore/save split is intentional: composite actions have no automatic post-
 
 - name: Save Flutter SDK
   if: steps.flutter-cache.outputs.cache-hit != 'true'
-  uses: curlewlabs-com/local-cache/save@v2
+  uses: curlewlabs-com/local-cache/save@v3
   with:
     path: ${{ runner.tool_cache }}/flutter
     key: flutter-${{ steps.flutter-version.outputs.version }}-stable-${{ runner.os }}-${{ runner.arch }}
@@ -79,7 +79,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: curlewlabs-com/local-cache@v2
+    - uses: curlewlabs-com/local-cache@v3
       id: cache
       with:
         path: ${{ runner.tool_cache }}/flutter
@@ -91,7 +91,7 @@ runs:
         channel: stable
         cache: false
     - if: steps.cache.outputs.cache-hit != 'true'
-      uses: curlewlabs-com/local-cache/save@v2
+      uses: curlewlabs-com/local-cache/save@v3
       with:
         path: ${{ runner.tool_cache }}/flutter
         key: flutter-${{ inputs.flutter-version }}-stable-${{ runner.os }}-${{ runner.arch }}
@@ -103,7 +103,7 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-vers
 ### Fallback keys
 
 ```yaml
-- uses: curlewlabs-com/local-cache@v2
+- uses: curlewlabs-com/local-cache@v3
   with:
     path: ${{ env.HOME }}/.cargo/registry
     key: cargo-${{ hashFiles('Cargo.lock') }}
@@ -128,7 +128,7 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-vers
 | Output | Description |
 |--------|-------------|
 | `cache-hit` | `true` if an exact key match was found |
-| `cache-matched-key` | Key that was actually restored (empty on miss). For prefix matches, this is the sanitized on-disk directory name, not the original key. |
+| `cache-matched-key` | Key that was actually restored (empty on miss). For exact hits this is always the original raw key; for prefix hits it is the original raw key for newly saved entries, and the legacy directory name when restoring an older pre-encoding entry. |
 
 ### Environment variables
 
@@ -149,9 +149,15 @@ These are a convenience for steps that cannot easily reference action outputs (e
 | `key` | Yes | Cache key |
 | `cache-dir` | Yes | Must match the restore step |
 
+## Upgrading from v2
+
+Change `@v2` to `@v3` in your workflow files.
+
+v3 features a collision-safe encoded on-disk cache layout. Existing exact-key entries from v2 and v1 remain fully readable, while newly saved entries use the safe encoded format. Your action workflows need no code changes other than bumping the tag; the underlying cache storage migration is transparent.
+
 ## Upgrading from v1
 
-Change `@v1` to `@v2` in your workflow files. No other changes needed.
+Change `@v1` to `@v3` in your workflow files. No other changes needed.
 
 On the first v2 restore, the target directory is cleaned and re-synced (since v1 left hard-linked files with no marker). After that, restores with the same key are skipped entirely.
 
@@ -181,17 +187,17 @@ Use `local-cache` when you cannot control where a tool installs itself. The Flut
 
 ## Releasing
 
-Users pin to `@v2` (floating major tag). After merging to `main`:
+Users pin to `@v3` (floating major tag). After merging to `main`:
 
 ```sh
-# Move the floating tag so @v2 users get the update.
-git tag -f v2 HEAD
-git push --force origin v2
+# Move the floating tag so @v3 users get the update.
+git tag -f v3 HEAD
+git push --force origin v3
 
 # Create a versioned release for the marketplace.
-git tag v2.x.y HEAD
-git push origin v2.x.y
-gh release create v2.x.y --title "v2.x.y" --notes "changelog here"
+git tag v3.x.y HEAD
+git push origin v3.x.y
+gh release create v3.x.y --title "v3.x.y" --notes "changelog here"
 ```
 
 ## License
