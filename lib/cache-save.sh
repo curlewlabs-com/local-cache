@@ -24,8 +24,11 @@
 # fully-written new one — never a partial directory.
 set -e
 
-# SYNC: must match lib/cache-restore.sh:MARKER_NAME exactly.
-MARKER_NAME=".local-cache-restore"
+script_dir=$(
+    CDPATH='' cd -- "$(dirname -- "$0")" && pwd
+)
+# shellcheck source=lib/cache-common.sh
+. "${script_dir}/cache-common.sh"
 
 path_to_cache="$1"
 cache_key="$2"
@@ -41,24 +44,7 @@ entries_dir="${cache_dir}/entries"
 
 start_time=$(date +%s)
 
-# SYNC: must match lib/cache-restore.sh:sanitize_key exactly.
-sanitize_key() {
-    printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '_'
-}
-
-# SYNC: must match lib/cache-restore.sh:append_summary exactly.
-append_summary() {
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-        printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
-    fi
-}
-
-safe_key=$(sanitize_key "$cache_key")
-# Reject keys that sanitize to "." or ".." — these would resolve to the entries
-# directory itself or its parent rather than a named entry.
-case "$safe_key" in
-    .|..) printf '::error::cache-save: key must not be "." or ".."\n'; exit 1 ;;
-esac
+encoded_key=$(encode_key "$cache_key")
 
 if [ ! -d "$path_to_cache" ]; then
     printf '::notice::Cache save skipped — source path does not exist: %s\n' "$path_to_cache"
@@ -69,21 +55,21 @@ fi
 # the entry. If so, exit cleanly — the cache is consistent and we have no work
 # to do. This check is load-bearing: it is the reason waiting on local-mutex is
 # safe. Without it, a second caller waking up after the first released the lock
-# would rsync into its own ".tmp-<safe_key>-$$" staging dir (the $$ disambiguates
+# would rsync into its own ".tmp-<encoded_key>-$$" staging dir (the $$ disambiguates
 # tmp paths so they never literally collide), then the final `mv` would silently
 # NEST that staging dir inside the existing entry — POSIX `mv src dest` where
 # dest is an existing directory moves src to dest/basename(src) rather than
 # failing. The result is a corrupted entry whose real files live at
-# entries/<safe_key>/ shadowed by a ghost subdirectory
-# entries/<safe_key>/.tmp-<safe_key>-<pid>/ that the EXIT-trap rm -rf can't
+# entries/<encoded-key>/ shadowed by a ghost subdirectory
+# entries/<encoded-key>/.tmp-<encoded-key>-<pid>/ that the EXIT-trap rm -rf can't
 # reach because $tmp_entry no longer names a real path after the mv.
-if [ -d "${entries_dir}/${safe_key}" ]; then
+if [ -d "${entries_dir}/${encoded_key}" ]; then
     printf '::debug::Cache entry already exists, skipping save: %s\n' "$cache_key"
     exit 0
 fi
 
 mkdir -p "$entries_dir"
-tmp_entry="${entries_dir}/.tmp-${safe_key}-$$"
+tmp_entry="${entries_dir}/.tmp-${encoded_key}-$$"
 
 cleanup_tmp() {
     rm -rf "$tmp_entry" 2>/dev/null || true
@@ -95,11 +81,12 @@ printf '::debug::Saving to local cache: %s\n' "$cache_key"
 # same path (restore → install → save, the canonical README pattern) doesn't
 # carry the previous entry's name into the new entry on disk.
 rsync -a --exclude="${MARKER_NAME}" "${path_to_cache}/" "${tmp_entry}/"
-mv "$tmp_entry" "${entries_dir}/${safe_key}"
+printf '%s' "$cache_key" > "${tmp_entry}/${ENTRY_KEY_NAME}"
+mv "$tmp_entry" "${entries_dir}/${encoded_key}"
 
 elapsed=$(( $(date +%s) - start_time ))
-size=$(du -sh "${entries_dir}/${safe_key}" 2>/dev/null | cut -f1 || printf '?')
-file_count=$(find "${entries_dir}/${safe_key}" -type f | wc -l | tr -d ' ')
+size=$(du -sh "${entries_dir}/${encoded_key}" 2>/dev/null | cut -f1 || printf '?')
+file_count=$(find "${entries_dir}/${encoded_key}" -type f | wc -l | tr -d ' ')
 printf '::notice::Cache saved: %s (%s files, %s in %ds)\n' "$cache_key" "$file_count" "$size" "$elapsed"
-printf '::debug::Entry path: %s\n' "${entries_dir}/${safe_key}"
+printf '::debug::Entry path: %s\n' "${entries_dir}/${encoded_key}"
 append_summary "- **local-cache** \`${cache_key}\` → 💾 Saved (${size}, ${elapsed}s)"

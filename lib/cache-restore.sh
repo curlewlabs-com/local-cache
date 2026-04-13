@@ -28,7 +28,12 @@
 # target is cleaned and re-synced from the local cache.
 set -e
 
-MARKER_NAME=".local-cache-restore"
+script_dir=$(
+    CDPATH='' cd -- "$(dirname -- "$0")" && pwd
+)
+# shellcheck source=lib/cache-common.sh
+. "${script_dir}/cache-common.sh"
+
 # Marker format version. Bumped when the on-disk layout of either the marker
 # file or the cache entries changes in a backward-incompatible way (e.g. v1
 # used hard links; v2 uses full rsync copies). The marker content is
@@ -66,16 +71,16 @@ fi
 entries_dir="${cache_dir}/entries"
 start_time=$(date +%s)
 
-# SYNC: must match lib/cache-save.sh:sanitize_key exactly.
-sanitize_key() {
-    printf '%s' "$1" | tr -c 'a-zA-Z0-9._-' '_'
-}
-
-# SYNC: must match lib/cache-save.sh:append_summary exactly.
-append_summary() {
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-        printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
+read_entry_key() {
+    entry_path="$1"
+    if [ -f "${entry_path}/${ENTRY_KEY_NAME}" ]; then
+        cat "${entry_path}/${ENTRY_KEY_NAME}"
+        return
     fi
+
+    # Legacy v2 entries predate ENTRY_KEY_NAME, so the original raw key is not
+    # recoverable for prefix matches. Fall back to the directory name.
+    basename "$entry_path"
 }
 
 # Check whether the target already has the expected content from a
@@ -127,7 +132,11 @@ do_restore() {
     # Each runner must have its own path value (e.g. runner.tool_cache).
     rm -rf "$path_to_cache"
     mkdir -p "$path_to_cache"
-    rsync -a "$entry_path/" "$path_to_cache/"
+    rsync -a \
+        --exclude="${MARKER_NAME}" \
+        --exclude="${ENTRY_KEY_NAME}" \
+        "$entry_path/" \
+        "$path_to_cache/"
 
     # Write the v2 marker so future restores with the same key skip.
     printf '%s:%s' "$MARKER_VERSION" "$matched_key" > "${path_to_cache}/${MARKER_NAME}"
@@ -153,24 +162,21 @@ do_restore() {
     fi
 }
 
-safe_key=$(sanitize_key "$cache_key")
-# Reject keys that sanitize to "." or ".." — these resolve to the entries directory
-# itself or its parent, causing rsync to leak all cached entries.
-case "$safe_key" in
-    .|..) printf '::error::cache-restore: key must not be "." or ".."\n'; exit 1 ;;
-esac
+encoded_key=$(encode_key "$cache_key")
+legacy_safe_key=$(printf '%s' "$cache_key" | tr -c 'a-zA-Z0-9._-' '_')
 
-# Only count entries when debug logging is actually on — a production restore
-# that hits the marker-skip happy path must be constant-time work, and the
-# entries dir can hold enough directories that `find | wc -l` is a real cost.
 if [ "${RUNNER_DEBUG:-}" = "1" ]; then
-    entry_count=$(find "${entries_dir}/" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ' || printf '0')
-    printf '::debug::Checking local cache — key: %s, entries: %s\n' "$cache_key" "$entry_count"
+    printf '::debug::Checking local cache — key: %s, entries-dir: %s\n' "$cache_key" "$entries_dir"
 fi
 
-if [ -d "${entries_dir}/${safe_key}" ]; then
-    do_restore "${entries_dir}/${safe_key}" "$cache_key" "true"
+if [ -d "${entries_dir}/${encoded_key}" ]; then
+    do_restore "${entries_dir}/${encoded_key}" "$cache_key" "true"
     # If do_restore returned success in check_only mode (meaning skip-lock=true), we exit.
+    exit 0
+fi
+
+if [ -d "${entries_dir}/${legacy_safe_key}" ]; then
+    do_restore "${entries_dir}/${legacy_safe_key}" "$cache_key" "true"
     exit 0
 fi
 
@@ -181,12 +187,12 @@ if [ -n "$restore_keys" ]; then
     while IFS= read -r prefix; do
         [ -z "$prefix" ] && continue
         [ -n "$found_match" ] && break
-        safe_prefix=$(sanitize_key "$prefix")
-        # SC2012: keys are sanitized to [a-zA-Z0-9._-] so filenames are safe.
+        encoded_prefix=$(encode_key "$prefix")
+        legacy_safe_prefix=$(printf '%s' "$prefix" | tr -c 'a-zA-Z0-9._-' '_')
         # SC2015: || true applies only to cd failing; ls|head always succeeds.
-        # -- prevents keys starting with "-" from being interpreted as ls flags.
+        # -- prevents prefixes starting with "-" from being interpreted as ls flags.
         # shellcheck disable=SC2012,SC2015
-        match=$(cd "${entries_dir}" 2>/dev/null && ls -dt -- "${safe_prefix}"* 2>/dev/null | head -1 || true)
+        match=$(cd "${entries_dir}" 2>/dev/null && ls -dt -- "${encoded_prefix}"* "${legacy_safe_prefix}"* 2>/dev/null | head -1 || true)
         # Reject staging dirs (.tmp-*) and dot-traversal paths (., ..) —
         # a prefix starting with "." could match in-progress temp entries.
         case "$match" in
@@ -199,10 +205,7 @@ if [ -n "$restore_keys" ]; then
     rm -f "$tmpfile"
 
     if [ -n "$found_match" ]; then
-        # matched_key is the sanitized directory name, not the original key
-        # with special characters — the original is not recoverable after
-        # sanitization. Callers should treat this as an opaque identifier.
-        do_restore "${entries_dir}/${found_match}" "$found_match" "false"
+        do_restore "${entries_dir}/${found_match}" "$(read_entry_key "${entries_dir}/${found_match}")" "false"
         exit 0
     fi
 fi
