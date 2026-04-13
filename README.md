@@ -14,7 +14,7 @@ With `local-cache`, the artifact lives on the machine's local disk. On the first
 
 ## How it works
 
-Cache entries are stored as plain directories under `cache-dir/entries/<encoded-key>/`. The directory name is a collision-free encoding of the caller's raw key, and each entry also stores the original key in a small metadata file. On restore, `rsync -a` copies the entry contents to the target path. A marker file (`.local-cache-restore`) in the target records which key was last restored:
+Cache entries are stored as plain directories under `cache-dir/entries/k-<sha256>/`. The directory name is a SHA-256 hash of the caller's raw key (fixed-length, collision-free), and each entry also stores the original key in a small metadata file. On restore, `rsync -a` copies the entry contents to the target path. A marker file (`.local-cache-restore`) in the target records which key was last restored:
 
 - **Marker matches the matched entry** → restore is skipped entirely (constant-time work). For prefix matches, "matched entry" is the resolved cache key for newly saved entries, and the legacy directory name when restoring an older pre-encoding entry.
 - **Marker missing or different key** → target is cleaned and re-synced from cache

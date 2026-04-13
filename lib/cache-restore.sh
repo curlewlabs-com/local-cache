@@ -187,20 +187,23 @@ if [ -n "$restore_keys" ]; then
     while IFS= read -r prefix; do
         [ -z "$prefix" ] && continue
         [ -n "$found_match" ] && break
-        encoded_prefix=$(encode_key "$prefix")
-        legacy_safe_prefix=$(printf '%s' "$prefix" | tr -c 'a-zA-Z0-9._-' '_')
-        # SC2015: || true applies only to cd failing; ls|head always succeeds.
-        # -- prevents prefixes starting with "-" from being interpreted as ls flags.
+        # SHA-256 directory names are not prefix-preserving, so we scan
+        # all entries and compare stored raw keys.  ls -dt sorts newest
+        # first.  Entry names are k-<hex> or legacy [a-zA-Z0-9._-]+ —
+        # no whitespace — so word-splitting in the for-loop is safe.
         # shellcheck disable=SC2012,SC2015
-        match=$(cd "${entries_dir}" 2>/dev/null && ls -dt -- "${encoded_prefix}"* "${legacy_safe_prefix}"* 2>/dev/null | head -1 || true)
-        # Reject staging dirs (.tmp-*) and dot-traversal paths (., ..) —
-        # a prefix starting with "." could match in-progress temp entries.
-        case "$match" in
-            .|..|.tmp-*) match="" ;;
-        esac
-        if [ -n "$match" ]; then
-            found_match="$match"
-        fi
+        for entry_name in $(cd "${entries_dir}" 2>/dev/null && ls -dt -- * 2>/dev/null || true); do
+            case "$entry_name" in
+                .|..|.tmp-*) continue ;;
+            esac
+            entry_key=$(read_entry_key "${entries_dir}/${entry_name}")
+            case "$entry_key" in
+                "${prefix}"*)
+                    found_match="$entry_name"
+                    break
+                    ;;
+            esac
+        done
     done < "$tmpfile"
     rm -f "$tmpfile"
 
