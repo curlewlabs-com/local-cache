@@ -1,7 +1,8 @@
 name: 'Runner Local Cache'
 description: >-
-  Restore a cached directory from local disk on self-hosted runners.
-  Drop-in for actions/cache using shared local storage.
+  Local-disk cache for self-hosted GitHub Actions runners — drop-in
+  replacement for actions/cache. Skip repeated downloads of Flutter SDK,
+  Cargo registry, and other large artifacts across runners on the same machine.
 author: 'curlewlabs-com'
 branding:
   icon: 'hard-drive'
