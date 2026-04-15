@@ -1,8 +1,8 @@
 # local-cache
 
-Local-disk cache for self-hosted GitHub Actions runners.
+Self-hosted GitHub Actions runners download the same large artifacts from GitHub's cache servers on every run — the Flutter SDK (1.8 GB), Cargo registries, CocoaPods specs, npm packages. When you have multiple runners on the same machine, each one downloads independently, wasting minutes of CI time on network IO for content that's already sitting on the local disk.
 
-A drop-in replacement for [`actions/cache`](https://github.com/actions/cache) that reads and writes a shared directory on the runner's local filesystem instead of GitHub's cloud cache servers. When you run N runners on the same physical machine, they all share one cache — the first runner to encounter a cache miss downloads and stores the content, and every subsequent runner gets a fast local restore.
+`local-cache` is a drop-in replacement for [`actions/cache`](https://github.com/actions/cache) that reads and writes a shared directory on the runner's local filesystem. The first runner to hit a cache miss downloads and stores the content locally; every subsequent runner restores from disk in seconds. No network round-trip, no cloud storage, no per-runner duplication.
 
 ## Why
 
