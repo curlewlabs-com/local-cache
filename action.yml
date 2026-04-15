@@ -1,7 +1,6 @@
 name: 'Runner Local Cache'
 description: >-
-  Restore a cached directory from local disk on self-hosted runners.
-  Drop-in for actions/cache using shared local storage.
+  Local-disk cache for self-hosted runners — drop-in replacement for actions/cache, less network IO.
 author: 'curlewlabs-com'
 branding:
   icon: 'hard-drive'
