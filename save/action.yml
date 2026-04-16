@@ -36,7 +36,7 @@ runs:
     #
     # Pinned to the immutable patch tag (not the floating major `@v2`)
     # so a local-cache@v3 consumer sees deterministic behavior across
-    # reruns. See AGENTS.md for the split-rule rationale.
+    # reruns. See AGENTS.md for the rationale.
     - name: Save cache
       uses: curlewlabs-com/local-mutex@v2.0.0
       env:

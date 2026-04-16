@@ -65,8 +65,7 @@ runs:
     #
     # local-mutex is pinned to an immutable patch tag (not the floating
     # major `@v2`) so a local-cache@v3 consumer sees deterministic
-    # behavior across reruns. See AGENTS.md "nested published action
-    # dependencies pin to immutable tags" for the rationale.
+    # behavior across reruns. See AGENTS.md for the rationale.
     - name: Restore (locked)
       if: steps.check.outputs.skip-lock != 'true'
       id: restore-lock
