@@ -159,9 +159,9 @@ v3 features a collision-safe encoded on-disk cache layout. Existing exact-key en
 
 Change `@v1` to `@v3` in your workflow files. No other changes needed.
 
-On the first v2 restore, the target directory is cleaned and re-synced (since v1 left hard-linked files with no marker). After that, restores with the same key are skipped entirely.
+On the first restore after upgrading, the target directory is cleaned and re-synced (since v1 left hard-linked files with no marker). After that, restores with the same key are skipped entirely.
 
-**Purge bloated v1 entries after upgrading.** v1 did not clean the target before restoring, so tools that install new versions alongside old ones (e.g. Flutter) caused the save step to capture every version ever installed. After upgrading to v2, delete the old entries so the next save creates a clean one:
+**Purge bloated v1 entries after upgrading.** v1 did not clean the target before restoring, so tools that install new versions alongside old ones (e.g. Flutter) caused the save step to capture every version ever installed. After upgrading, delete the old entries so the next save creates a clean one:
 
 ```sh
 rm -rf /path/to/cache-dir/entries/* /path/to/cache-dir/entries/.tmp-*
@@ -183,20 +183,24 @@ Use `local-cache` when you cannot control where a tool installs itself. The Flut
 - **macOS Spotlight indexing.** On macOS runners, restoring large cache entries (e.g. the Flutter SDK) can trigger `mds` / `mds_stores` to re-index the restored files, causing CPU spikes. Exclude the runner's root directory (or at minimum the `cache-dir`) from Spotlight indexing via System Settings > Spotlight > Privacy, or programmatically with `mdutil -i off /path/to/runner`.
 - **Windows Defender on WSL2.** If your runners run inside WSL2 and you notice CPU spikes from `MsMpEng.exe` after cache restores, Windows Defender may be scanning files written to the WSL2 filesystem. Add the WSL2 distribution's directory to the Defender exclusion list in Windows Security settings.
 - **No GitHub cloud fallback.** Unlike `actions/cache`, there is no network fallback on a local miss. The first run on a new machine always downloads.
-- **Explicit save required.** Composite actions have no automatic post-step hook, so you must call `curlewlabs-com/local-cache/save@v2` explicitly after your install step. A JavaScript action with a `post:` hook would enable a single-step interface, but adds a build step and Node.js dependency that this action avoids by being pure shell.
+- **Explicit save required.** Composite actions have no automatic post-step hook, so you must call `curlewlabs-com/local-cache/save@v3` explicitly after your install step. A JavaScript action with a `post:` hook would enable a single-step interface, but adds a build step and Node.js dependency that this action avoids by being pure shell.
 
 ## Releasing
 
-Users pin to `@v3` (floating major tag). After merging to `main`:
+Every release ships **both** an immutable patch tag (`vMAJOR.MINOR.PATCH`, e.g. `v3.0.1`) and a floating major tag (`vMAJOR`, e.g. `v3`). Users who want exact reproducibility pin to `@v3.0.1`; users who want automatic minor/patch updates inside the v3 series pin to `@v3`. Both tag kinds exist for every release. See [AGENTS.md](AGENTS.md) for the full contract.
+
+After merging to `main`:
 
 ```sh
-# Move the floating tag so @v3 users get the update.
+# Immutable patch tag — never force-moved once pushed.
+git tag v3.x.y HEAD
+git push origin v3.x.y
+
+# Floating major tag — force-updated to the latest v3.x.y commit on every release.
 git tag -f v3 HEAD
 git push --force origin v3
 
-# Create a versioned release for the marketplace.
-git tag v3.x.y HEAD
-git push origin v3.x.y
+# GitHub release for the marketplace.
 gh release create v3.x.y --title "v3.x.y" --notes "changelog here"
 ```
 
