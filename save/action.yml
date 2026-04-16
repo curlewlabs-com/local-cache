@@ -38,7 +38,7 @@ runs:
     # so a local-cache@v3 consumer sees deterministic behavior across
     # reruns. See AGENTS.md for the rationale.
     - name: Save cache
-      uses: curlewlabs-com/local-mutex@v2.0.0
+      uses: curlewlabs-com/local-mutex@v2.0.1
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_KEY: ${{ inputs.key }}
@@ -46,9 +46,11 @@ runs:
         SAVE_SCRIPT: ${{ github.action_path }}/../lib/cache-save.sh
       with:
         # The key is interpolated into the lock name so saves of different
-        # keys do not block each other. local-mutex sanitizes the name
-        # internally (chars outside [a-zA-Z0-9._-] become underscores), so
-        # arbitrary key contents are safe.
+        # keys do not block each other. local-mutex v2.0.1+ hashes its
+        # name input with SHA-256 to form the lockfile basename, so
+        # distinct keys always map to distinct locks regardless of length
+        # or byte content — no sanitization or truncation that could
+        # collapse two different keys to the same lockfile.
         name: cache-save-${{ inputs.key }}
         run: |
           sh "$SAVE_SCRIPT" \
