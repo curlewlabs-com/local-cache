@@ -685,3 +685,97 @@ jobs:
           [ "${{ steps.action-output-test.outputs.cache-hit }}" = "true" ] || (echo "Action output cache-hit mismatch" && exit 1)
           [ "${{ steps.action-output-test.outputs.cache-matched-key }}" = "phase-v1" ] || (echo "Action output matched-key mismatch" && exit 1)
           echo "Action output mapping: OK"
+
+      # ─── Mutex name collision resistance ─────────────────────────────────
+
+      # The mutex name used by save/action.yml is derived from the
+      # SHA-256 of the raw key (via hash_key in lib/cache-common.sh),
+      # not the raw key itself. local-mutex would otherwise truncate
+      # long keys to 200 chars and sanitize characters outside
+      # [a-zA-Z0-9._-] to underscores — two distinct keys that differ
+      # only past char 200, or only in sanitized characters, would
+      # then share a lock file even though their storage entries do
+      # not collide (storage is already SHA-256-keyed).
+      #
+      # local-mutex keeps its lockfile at /tmp/local-mutex-<sanitized>.lock
+      # with `lockf -k`, so after a save the file persists and can be
+      # inspected to verify which mutex name was used.
+      - name: Set up mutex-name fixture
+        run: |
+          rm -f /tmp/local-mutex-cache-save-*.lock
+          mkdir -p /tmp/mutex-name-src
+          echo "content" > /tmp/mutex-name-src/data.txt
+
+      - name: Save to exercise the mutex-name prep step
+        uses: ./save
+        with:
+          path: /tmp/mutex-name-src
+          key: mutex-name-verification-key
+          cache-dir: /tmp/mutex-name-cache
+
+      - name: Mutex name is SHA-256 of key, not raw key
+        run: |
+          . lib/cache-common.sh
+          expected_hash=$(hash_key 'mutex-name-verification-key')
+          expected_lock="/tmp/local-mutex-cache-save-${expected_hash}.lock"
+          test -f "$expected_lock" \
+            || (echo "Expected SHA-256 lockfile at $expected_lock; found:" \
+                && ls -la /tmp/local-mutex-cache-save-*.lock 2>/dev/null \
+                && exit 1)
+          # Old behavior would leave a lockfile with the raw-key name.
+          # That file must NOT exist, even post-fix.
+          test ! -f "/tmp/local-mutex-cache-save-mutex-name-verification-key.lock" \
+            || (echo "Raw-key lockfile leaked — mutex regressed to raw key" && exit 1)
+          rm -f /tmp/local-mutex-cache-save-*.lock
+          rm -rf /tmp/mutex-name-src /tmp/mutex-name-cache
+          echo "Mutex name uses SHA-256 of key: OK"
+
+      # Two long keys that would collide under local-mutex's
+      # sanitize-and-truncate-to-200 sanitization must produce distinct
+      # mutex lockfiles after the SHA-256 fix. Builds two 250-char keys
+      # with an identical 200-char prefix and different tails.
+      - name: Long keys with matching 200-char prefix don't share a mutex
+        run: |
+          rm -f /tmp/local-mutex-cache-save-*.lock
+
+          key_prefix=$(printf 'x%.0s' $(seq 1 200))
+          key_a="${key_prefix}-alpha-tail-unique-suffix"
+          key_b="${key_prefix}-beta-tail-unique-suffix"
+
+          # Sanity check the test setup: these two keys share the first
+          # 200 chars, so under the old raw-key mutex scheme they would
+          # collide after local-mutex truncated to 200.
+          [ "$(printf '%s' "$key_a" | head -c 200)" = "$(printf '%s' "$key_b" | head -c 200)" ] \
+            || (echo "Test setup wrong: keys should share 200-char prefix" && exit 1)
+
+          mkdir -p /tmp/long-key-a /tmp/long-key-b /tmp/long-key-cache
+          echo a > /tmp/long-key-a/data.txt
+          echo b > /tmp/long-key-b/data.txt
+
+          sh lib/cache-save.sh /tmp/long-key-a "$key_a" /tmp/long-key-cache
+          sh lib/cache-save.sh /tmp/long-key-b "$key_b" /tmp/long-key-cache
+
+          # cache-save.sh itself doesn't touch local-mutex (the action.yml
+          # layer does), so to verify the mutex naming we compute the
+          # expected SHA-256-derived names directly and assert they differ.
+          . lib/cache-common.sh
+          hash_a=$(hash_key "$key_a")
+          hash_b=$(hash_key "$key_b")
+          [ "$hash_a" != "$hash_b" ] \
+            || (echo "Hashes collided for supposedly-distinct keys" && exit 1)
+
+          # Both encoded storage entries must exist and be distinct — this
+          # is already a v3 invariant but confirming here documents that the
+          # same collision-resistance used for storage is now also used for
+          # the mutex.
+          encoded_a=$(encode_key "$key_a")
+          encoded_b=$(encode_key "$key_b")
+          [ "$encoded_a" != "$encoded_b" ] \
+            || (echo "Encoded storage keys collided" && exit 1)
+          test -d "/tmp/long-key-cache/entries/${encoded_a}" \
+            || (echo "Missing entry for key A" && exit 1)
+          test -d "/tmp/long-key-cache/entries/${encoded_b}" \
+            || (echo "Missing entry for key B" && exit 1)
+
+          rm -rf /tmp/long-key-a /tmp/long-key-b /tmp/long-key-cache
+          echo "Long keys with colliding 200-char prefix stay distinct: OK"

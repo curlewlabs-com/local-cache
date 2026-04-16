@@ -59,6 +59,24 @@ runs:
           "$INPUT_CACHE_DIR" \
           "$INPUT_RESTORE_KEYS"
 
+    # Phase 1.5: Compute a collision-safe mutex name.
+    # local-mutex sanitizes and truncates its `name` input to 200 chars
+    # for the lock-file basename. Raw interpolation of the cache key
+    # would mean two distinct long keys that share a 200-char prefix
+    # (or only differ in sanitized-away characters) collide on the
+    # mutex even though their storage entries — which are SHA-256-keyed
+    # — do not. Hash the key here so mutex and storage share identical
+    # collision resistance.
+    - name: Compute mutex name
+      if: steps.check.outputs.skip-lock != 'true'
+      id: mutex-name
+      shell: sh
+      env:
+        INPUT_KEY: ${{ inputs.key }}
+      run: |
+        . "${{ github.action_path }}/lib/cache-common.sh"
+        printf 'name=cache-save-%s\n' "$(hash_key "$INPUT_KEY")" >> "$GITHUB_OUTPUT"
+
     # Phase 2: Serialized Restore / Coordination.
     # If Phase 1 missed or found a stale target, we take a per-key lock
     # via local-mutex to perform the rsync or record a miss.
@@ -77,7 +95,7 @@ runs:
         INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
         INPUT_RESTORE_KEYS: ${{ inputs.restore-keys }}
       with:
-        name: cache-save-${{ inputs.key }}
+        name: ${{ steps.mutex-name.outputs.name }}
         run: |
           sh "${{ github.action_path }}/lib/cache-restore.sh" \
             "$INPUT_PATH" \
