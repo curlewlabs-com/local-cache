@@ -370,6 +370,139 @@ jobs:
             || (echo "Expected path to not exist on dash prefix miss" && exit 1)
           echo "Dash prefix safety: OK"
 
+      # Restore-target safety guard. cache-restore.sh does an
+      # unconditional `rm -rf "$path_to_cache"` on a stale-marker
+      # re-sync, so a misconfigured workflow passing path: /, path: $HOME,
+      # or a relative path could wipe the runner. The guard rejects
+      # those targets up-front with exit 2 before any filesystem side
+      # effect. One test per rejection class plus a positive control
+      # confirming a safe sibling path is still accepted.
+      - name: Restore-target guard rejects root
+        run: |
+          set +e
+          out=$(sh lib/cache-restore.sh / any-key /tmp/local-cache "" 2>&1)
+          rc=$?
+          set -e
+          [ "$rc" = "2" ] \
+            || (echo "Expected exit 2 for root path, got $rc. Output: $out" && exit 1)
+          echo "$out" | grep -q 'system root' \
+            || (echo "Expected 'system root' in error, got: $out" && exit 1)
+          echo "Reject /: OK"
+
+      - name: Restore-target guard rejects /.
+        run: |
+          set +e
+          out=$(sh lib/cache-restore.sh /. any-key /tmp/local-cache "" 2>&1)
+          rc=$?
+          set -e
+          [ "$rc" = "2" ] \
+            || (echo "Expected exit 2 for /., got $rc. Output: $out" && exit 1)
+          echo "Reject /.: OK"
+
+      - name: Restore-target guard rejects /..
+        run: |
+          set +e
+          out=$(sh lib/cache-restore.sh /.. any-key /tmp/local-cache "" 2>&1)
+          rc=$?
+          set -e
+          [ "$rc" = "2" ] \
+            || (echo "Expected exit 2 for /.., got $rc. Output: $out" && exit 1)
+          echo "Reject /..: OK"
+
+      - name: Restore-target guard rejects relative paths
+        run: |
+          set +e
+          out=$(sh lib/cache-restore.sh some/relative any-key /tmp/local-cache "" 2>&1)
+          rc=$?
+          set -e
+          [ "$rc" = "2" ] \
+            || (echo "Expected exit 2 for relative path, got $rc. Output: $out" && exit 1)
+          echo "$out" | grep -q 'must be absolute' \
+            || (echo "Expected 'must be absolute' in error, got: $out" && exit 1)
+          echo "Reject relative: OK"
+
+      - name: Restore-target guard rejects whitespace-only paths
+        run: |
+          set +e
+          out=$(sh lib/cache-restore.sh "   " any-key /tmp/local-cache "" 2>&1)
+          rc=$?
+          set -e
+          # cache-restore.sh's empty check runs first for unambiguously
+          # empty strings; tabs/spaces get past it and hit the new
+          # whitespace-only guard. Both produce exit 2, which is the
+          # invariant we're asserting.
+          [ "$rc" = "2" ] \
+            || (echo "Expected exit 2 for whitespace-only path, got $rc. Output: $out" && exit 1)
+          echo "Reject whitespace-only: OK"
+
+      - name: Restore-target guard rejects $HOME
+        run: |
+          set +e
+          out=$(HOME=/tmp/guard-home sh lib/cache-restore.sh /tmp/guard-home any-key /tmp/local-cache "" 2>&1)
+          rc=$?
+          set -e
+          [ "$rc" = "2" ] \
+            || (echo "Expected exit 2 for HOME path, got $rc. Output: $out" && exit 1)
+          echo "$out" | grep -q 'HOME' \
+            || (echo "Expected HOME in error, got: $out" && exit 1)
+          echo "Reject \$HOME: OK"
+
+      - name: Restore-target guard rejects parents of $HOME
+        run: |
+          set +e
+          out=$(HOME=/tmp/guard-parent/home sh lib/cache-restore.sh /tmp/guard-parent any-key /tmp/local-cache "" 2>&1)
+          rc=$?
+          set -e
+          [ "$rc" = "2" ] \
+            || (echo "Expected exit 2 for parent of HOME, got $rc. Output: $out" && exit 1)
+          echo "$out" | grep -q 'HOME' \
+            || (echo "Expected HOME in error, got: $out" && exit 1)
+          echo "Reject parent of \$HOME: OK"
+
+      - name: Restore-target guard rejects $GITHUB_WORKSPACE
+        run: |
+          set +e
+          # Unset HOME so the HOME check doesn't fire first and mask the
+          # GITHUB_WORKSPACE-specific diagnostic we're asserting on. Also
+          # strip the runner's own GITHUB_WORKSPACE and RUNNER_WORKSPACE
+          # from the outer env so we exercise exactly the value we pass.
+          out=$(env -u HOME -u RUNNER_WORKSPACE GITHUB_WORKSPACE=/tmp/guard-ws sh lib/cache-restore.sh /tmp/guard-ws any-key /tmp/local-cache "" 2>&1)
+          rc=$?
+          set -e
+          [ "$rc" = "2" ] \
+            || (echo "Expected exit 2 for GITHUB_WORKSPACE path, got $rc. Output: $out" && exit 1)
+          echo "$out" | grep -q 'GITHUB_WORKSPACE' \
+            || (echo "Expected GITHUB_WORKSPACE in error, got: $out" && exit 1)
+          echo "Reject \$GITHUB_WORKSPACE: OK"
+
+      - name: Restore-target guard rejects parents of $RUNNER_WORKSPACE
+        run: |
+          set +e
+          out=$(env -u HOME -u GITHUB_WORKSPACE RUNNER_WORKSPACE=/tmp/guard-rw/inner sh lib/cache-restore.sh /tmp/guard-rw any-key /tmp/local-cache "" 2>&1)
+          rc=$?
+          set -e
+          [ "$rc" = "2" ] \
+            || (echo "Expected exit 2 for parent of RUNNER_WORKSPACE, got $rc. Output: $out" && exit 1)
+          echo "$out" | grep -q 'RUNNER_WORKSPACE' \
+            || (echo "Expected RUNNER_WORKSPACE in error, got: $out" && exit 1)
+          echo "Reject parent of \$RUNNER_WORKSPACE: OK"
+
+      - name: Restore-target guard accepts a safe sibling path
+        run: |
+          # Positive control: a path under /tmp that is not the root, not
+          # an ancestor of any guarded variable, and has no cache entry
+          # should produce a clean cache miss (exit 0) rather than a
+          # rejection. This confirms the guard is not over-rejecting.
+          set +e
+          out=$(env -u HOME -u GITHUB_WORKSPACE -u RUNNER_WORKSPACE sh lib/cache-restore.sh /tmp/guard-safe-sibling no-such-key /tmp/local-cache "" 2>&1)
+          rc=$?
+          set -e
+          [ "$rc" = "0" ] \
+            || (echo "Expected exit 0 for safe sibling path, got $rc. Output: $out" && exit 1)
+          echo "$out" | grep -q 'Cache miss' \
+            || (echo "Expected 'Cache miss' in output, got: $out" && exit 1)
+          echo "Accept safe sibling: OK"
+
       # Sequential idempotent save: verify that a save against an already-
       # populated entry exits cleanly without touching the existing content.
       # This does NOT exercise parallel mutex contention — real contention is

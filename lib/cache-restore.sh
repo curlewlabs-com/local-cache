@@ -61,6 +61,75 @@ if [ -z "$path_to_cache" ] || [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
     exit 1
 fi
 
+# cache-restore.sh does an unconditional `rm -rf "$path_to_cache"` on a
+# stale-marker re-sync (see do_restore below). A misconfigured caller
+# passing `path: /` or `path: $HOME` must not be able to wipe the
+# machine, so reject targets that would destroy the system root or a
+# known runner workspace before any filesystem side effects. The check
+# runs up-front so it also fires in --check mode, which keeps the error
+# shape consistent across Phase 1 and Phase 2 and catches bad paths
+# before Phase 2 even acquires the mutex.
+check_not_restore_ancestor() {
+    target_norm="$1"
+    danger_label="$2"
+    danger_raw="$3"
+    [ -z "$danger_raw" ] && return 0
+    # Normalize trailing slashes on the danger path to match target_norm.
+    danger_norm="$danger_raw"
+    while [ "${danger_norm%/}" != "$danger_norm" ]; do
+        danger_norm="${danger_norm%/}"
+    done
+    [ -z "$danger_norm" ] && danger_norm="/"
+    case "$danger_norm" in
+        "$target_norm"|"$target_norm"/*)
+            printf '::error::cache-restore: refusing to restore to %s — rm -rf would delete %s (%s)\n' "$path_to_cache" "$danger_label" "$danger_raw" >&2
+            exit 2
+            ;;
+    esac
+}
+
+# Whitespace-only paths never resolve to a sensible target; they usually
+# indicate an expansion failure in the caller's workflow YAML.
+case "$path_to_cache" in
+    *[![:space:]]*) ;;
+    *)
+        printf '::error::cache-restore: path must not be whitespace-only\n' >&2
+        exit 2
+        ;;
+esac
+
+# Absolute paths only; relative paths resolve against this script's CWD,
+# which varies between Phase 1 and Phase 2 (Phase 2 runs inside
+# local-mutex's working directory), and is therefore unsafe to trust.
+case "$path_to_cache" in
+    /*) ;;
+    *)
+        printf '::error::cache-restore: path must be absolute: %s\n' "$path_to_cache" >&2
+        exit 2
+        ;;
+esac
+
+# Trivially unsafe paths — caught even when HOME/RUNNER_WORKSPACE/
+# GITHUB_WORKSPACE are all unset (e.g. local smoke-testing).
+case "$path_to_cache" in
+    /|/.|/..)
+        printf '::error::cache-restore: refusing to restore to %s — rm -rf would affect the system root\n' "$path_to_cache" >&2
+        exit 2
+        ;;
+esac
+
+# Normalize trailing slashes on the target so "/foo/" and "/foo" hit the
+# ancestor check identically. Preserve root ("/" must stay "/").
+path_to_cache_norm="$path_to_cache"
+while [ "${path_to_cache_norm%/}" != "$path_to_cache_norm" ]; do
+    path_to_cache_norm="${path_to_cache_norm%/}"
+done
+[ -z "$path_to_cache_norm" ] && path_to_cache_norm="/"
+
+check_not_restore_ancestor "$path_to_cache_norm" HOME "${HOME:-}"
+check_not_restore_ancestor "$path_to_cache_norm" RUNNER_WORKSPACE "${RUNNER_WORKSPACE:-}"
+check_not_restore_ancestor "$path_to_cache_norm" GITHUB_WORKSPACE "${GITHUB_WORKSPACE:-}"
+
 # GITHUB_OUTPUT must exist before any output is written. Outside Actions it is
 # unset; a missing path with set -e would abort the script on the first write.
 if [ -z "${GITHUB_OUTPUT:-}" ]; then
