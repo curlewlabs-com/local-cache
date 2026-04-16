@@ -62,10 +62,15 @@ runs:
     # Phase 2: Serialized Restore / Coordination.
     # If Phase 1 missed or found a stale target, we take a per-key lock
     # via local-mutex to perform the rsync or record a miss.
+    #
+    # local-mutex is pinned to an immutable patch tag (not the floating
+    # major `@v2`) so a local-cache@v3 consumer sees deterministic
+    # behavior across reruns. See AGENTS.md "nested published action
+    # dependencies pin to immutable tags" for the rationale.
     - name: Restore (locked)
       if: steps.check.outputs.skip-lock != 'true'
       id: restore-lock
-      uses: curlewlabs-com/local-mutex@v1
+      uses: curlewlabs-com/local-mutex@v2.0.0
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_KEY: ${{ inputs.key }}
