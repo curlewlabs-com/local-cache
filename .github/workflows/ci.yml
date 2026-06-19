@@ -818,3 +818,47 @@ jobs:
           [ "${{ steps.action-output-test.outputs.cache-hit }}" = "true" ] || (echo "Action output cache-hit mismatch" && exit 1)
           [ "${{ steps.action-output-test.outputs.cache-matched-key }}" = "phase-v1" ] || (echo "Action output matched-key mismatch" && exit 1)
           echo "Action output mapping: OK"
+
+      # Touch-on-restore (LRU signal). A served restore must stamp the entry's
+      # last-use time — the mtime of its metadata file (.local-cache-key) — so
+      # an external least-recently-used sweep can reclaim space by genuine
+      # recency of use. This must hold on the constant-time marker-skip path
+      # (where a hot-but-old entry would otherwise look stale and risk wrongful
+      # eviction), and it must NOT move the entry *directory's* mtime, which
+      # prefix/restore-keys resolution sorts on — moving it would silently
+      # retarget selection from most-recently-saved to most-recently-used.
+      - name: Restore stamps last-use time without disturbing selection order
+        run: |
+          . lib/cache-common.sh
+          stat_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+
+          mkdir -p /tmp/test-lru-src
+          echo "lru" > /tmp/test-lru-src/data.txt
+          sh lib/cache-save.sh /tmp/test-lru-src lru-key /tmp/local-cache
+          encoded_key=$(encode_key 'lru-key')
+          entry="/tmp/local-cache/entries/${encoded_key}"
+
+          # Populate the target + marker so the next restore takes the
+          # constant-time skip path.
+          sh lib/cache-restore.sh /tmp/test-lru-dst lru-key /tmp/local-cache ""
+
+          # Age both the metadata file and the directory to a known past time.
+          touch -t 202001010000 "${entry}/.local-cache-key" "${entry}"
+          meta_before=$(stat_mtime "${entry}/.local-cache-key")
+          dir_before=$(stat_mtime "${entry}")
+
+          # Marker-skip restore (constant-time path).
+          sh lib/cache-restore.sh /tmp/test-lru-dst lru-key /tmp/local-cache ""
+          [ "$(stat_mtime "${entry}/.local-cache-key")" -gt "$meta_before" ] \
+            || (echo "skip-path restore did not stamp last-use time" && exit 1)
+          [ "$(stat_mtime "${entry}")" = "$dir_before" ] \
+            || (echo "skip-path restore moved entry dir mtime — corrupts prefix selection order" && exit 1)
+
+          # Full-rsync path (fresh target) also stamps last-use time.
+          touch -t 202001010000 "${entry}/.local-cache-key"
+          meta_before=$(stat_mtime "${entry}/.local-cache-key")
+          sh lib/cache-restore.sh /tmp/test-lru-dst-fresh lru-key /tmp/local-cache ""
+          [ "$(stat_mtime "${entry}/.local-cache-key")" -gt "$meta_before" ] \
+            || (echo "full-path restore did not stamp last-use time" && exit 1)
+
+          echo "Touch-on-restore last-use stamping: OK"
