@@ -862,3 +862,26 @@ jobs:
             || (echo "full-path restore did not stamp last-use time" && exit 1)
 
           echo "Touch-on-restore last-use stamping: OK"
+
+      # set -eu hardening. With nounset on, a bare positional ($1) on a missing
+      # arg would abort with "unbound variable" before the script's own
+      # empty-arg check runs. The entry scripts guard the positionals (${1:-})
+      # so the caller-facing "must not be empty" error stays the single failure
+      # path. Assert that contract for both scripts — exit 1 with the friendly
+      # message, never a leaked nounset abort.
+      - name: Entry scripts report missing args cleanly under set -eu
+        run: |
+          for script in cache-restore cache-save; do
+            set +e
+            out=$(sh "lib/${script}.sh" 2>&1)
+            rc=$?
+            set -e
+            [ "$rc" = "1" ] \
+              || (echo "${script}: expected exit 1 for missing args, got $rc. Output: $out" && exit 1)
+            echo "$out" | grep -q 'must not be empty' \
+              || (echo "${script}: expected 'must not be empty' error, got: $out" && exit 1)
+            if echo "$out" | grep -qi 'unbound variable'; then
+              echo "${script}: set -u leaked an 'unbound variable' abort instead of the friendly error" && exit 1
+            fi
+            echo "${script}: missing-arg guard OK"
+          done

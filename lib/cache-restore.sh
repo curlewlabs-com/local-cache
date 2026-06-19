@@ -26,7 +26,7 @@
 # current key, the restore is skipped entirely — constant-time work.  When it
 # doesn't match (or is missing, e.g. from a v1 hard-link restore), the
 # target is cleaned and re-synced from the local cache.
-set -e
+set -eu
 
 script_dir=$(
     CDPATH='' cd -- "$(dirname -- "$0")" && pwd
@@ -46,14 +46,17 @@ script_dir=$(
 MARKER_VERSION="v2"
 
 check_only="false"
-if [ "$1" = "--check" ]; then
+# ${1:-}, not $1: under `set -u` a bare positional on a missing arg aborts with
+# "unbound variable" before the empty-string checks below can emit the
+# caller-facing error. The guards keep those checks the single failure path.
+if [ "${1:-}" = "--check" ]; then
     check_only="true"
     shift
 fi
 
-path_to_cache="$1"
-cache_key="$2"
-cache_dir="$3"
+path_to_cache="${1:-}"
+cache_key="${2:-}"
+cache_dir="${3:-}"
 restore_keys="${4:-}"
 
 if [ -z "$path_to_cache" ] || [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
