@@ -22,7 +22,7 @@
 # Atomic publication: rsync to a temp dir under entries/, then mv into
 # place. Concurrent readers either see the old (or no) entry or the
 # fully-written new one — never a partial directory.
-set -e
+set -eu
 
 script_dir=$(
     CDPATH='' cd -- "$(dirname -- "$0")" && pwd
@@ -30,9 +30,12 @@ script_dir=$(
 # shellcheck source=lib/cache-common.sh
 . "${script_dir}/cache-common.sh"
 
-path_to_cache="$1"
-cache_key="$2"
-cache_dir="$3"
+# ${1:-}, not $1: under `set -u` a bare positional on a missing arg aborts with
+# "unbound variable" before the empty-string check below can emit the
+# caller-facing error. The guards keep that check the single failure path.
+path_to_cache="${1:-}"
+cache_key="${2:-}"
+cache_dir="${3:-}"
 
 
 if [ -z "$path_to_cache" ] || [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
