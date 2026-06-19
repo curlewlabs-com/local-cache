@@ -159,6 +159,24 @@ is_current() {
     [ -f "$marker" ] && [ "$(cat "$marker")" = "${MARKER_VERSION}:$1" ]
 }
 
+# Stamp the entry's last-use time so an external LRU sweep can evict by
+# genuine recency of use. We bump the mtime of the entry's metadata file
+# (.local-cache-key), NOT the entry directory: prefix/restore-keys
+# resolution sorts candidates by directory mtime (`ls -dt`), so touching the
+# directory would silently retarget selection from most-recently-saved to
+# most-recently-used. Touching a file inside the directory leaves the
+# directory's own mtime untouched (only adding/removing entries changes it),
+# keeping the two signals separate — directory mtime = last write, metadata
+# mtime = last use. Best-effort: a read-only store, or a legacy pre-encoding
+# entry that predates the metadata file, must not fail an otherwise-good
+# restore.
+mark_used() {
+    entry_meta="$1/${ENTRY_KEY_NAME}"
+    [ -f "$entry_meta" ] || return 0
+    touch -- "$entry_meta" 2>/dev/null \
+        || printf '::debug::mark_used: could not touch %s (read-only store?)\n' "$entry_meta"
+}
+
 do_restore() {
     entry_path="$1"
     matched_key="$2"
@@ -187,6 +205,7 @@ do_restore() {
         if [ "$check_only" = "true" ]; then
             printf 'skip-lock=true\n' >> "$GITHUB_OUTPUT"
         fi
+        mark_used "$entry_path"
         return
     fi
 
@@ -229,6 +248,8 @@ do_restore() {
     if [ -n "${GITHUB_ENV:-}" ]; then
         printf 'LOCAL_CACHE_HIT=%s\nLOCAL_CACHE_MATCHED_KEY=%s\n' "$is_exact" "$matched_key" >> "$GITHUB_ENV"
     fi
+
+    mark_used "$entry_path"
 }
 
 encoded_key=$(encode_key "$cache_key")

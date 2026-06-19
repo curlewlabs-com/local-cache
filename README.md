@@ -30,6 +30,8 @@ On save, content is synced to a temp directory then renamed atomically into plac
 
 **Why not copy-on-write (APFS clones, reflinks)?** CoW semantics are not portable: `cp -c` is macOS-only (APFS), `cp --reflink` is Linux-only (Btrfs/XFS, not ext4), and edge-case behavior (failure modes, metadata preservation on fallback) varies across OS versions. We optimize for easy to understand over minimal: one tool (`rsync`), one behavior, no platform detection. The marker-based skip also makes CoW redundant for the common case — steady-state restores are constant-time work, and version bumps (the only case CoW would help) are rare and take seconds.
 
+**Last-use tracking (for eviction):** Every restore that serves an entry — including the constant-time marker-skip path — updates the modification time of that entry's metadata file (`.local-cache-key`). This gives each entry an accurate *last-used* timestamp, distinct from the entry directory's own mtime (which records the last *write* and is what prefix matching sorts on). Nothing here evicts anything on its own; it makes a least-recently-used sweep possible and safe — see [Eviction](#eviction).
+
 ## Usage
 
 The restore/save split is intentional: composite actions have no automatic post-step hook, so the save must be called explicitly after your install step. This also gives you control over the condition — you only pay the save cost when the cache actually missed.
@@ -112,7 +114,7 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just `flutter-vers
     cache-dir: /path/to/shared/cache
 ```
 
-`restore-keys` are tried in order. The first prefix that has any match wins; within that prefix's matches, the most recently modified entry is used. A prefix match sets `cache-hit=false` so the save step still runs and writes a *new* entry under the caller's exact key — the prefix-matched entry is not updated in place, so repeated runs with a rolling exact key produce N separate entries over time (see the "No TTL or eviction" limitation below).
+`restore-keys` are tried in order. The first prefix that has any match wins; within that prefix's matches, the entry with the newest directory mtime — the most recently *saved* — is used. (A restore updates an entry's *last-used* time on its metadata file, not the directory, so reads never reorder this selection — see [Eviction](#eviction).) A prefix match sets `cache-hit=false` so the save step still runs and writes a *new* entry under the caller's exact key — the prefix-matched entry is not updated in place, so repeated runs with a rolling exact key produce N separate entries over time (see [Eviction](#eviction)).
 
 ## Inputs
 
@@ -175,9 +177,32 @@ If the tool respects an environment variable that controls where it stores its c
 
 Use `local-cache` when you cannot control where a tool installs itself. The Flutter SDK (`subosito/flutter-action` installs into `runner.tool_cache`, which is per-runner) and the Cargo registry (`$HOME/.cargo`, which is per-user home) are typical examples: they do not natively share state across runners on the same machine.
 
+## Eviction
+
+`local-cache` never evicts on its own — a save doesn't touch sibling entries — so a key that encodes a rolling value (a Flutter SDK version, a `Cargo.lock` hash) accumulates one entry per value. What the action *does* provide is an accurate **last-used** signal, so an external sweep can reclaim space by genuine recency of use rather than recency of creation.
+
+Every restore that serves an entry, including the constant-time marker-skip path, bumps the modification time of that entry's metadata file (`.local-cache-key`). So that file's mtime answers *"when was this entry last used"*, independent of the entry directory's mtime, which answers *"when was this entry last written"* (and is what prefix/`restore-keys` resolution sorts on). The two never interfere: reads move the former, writes move the latter.
+
+That makes a least-recently-used sweep safe to run on a schedule:
+
+```sh
+# Remove entries not used in the last 30 days.
+# Whole-entry granularity is deliberate: deleting individual files from
+# inside a live entry would mutate the rsync source of an in-flight restore
+# and corrupt it. Only ever remove an entry directory as a unit.
+for meta in /path/to/cache-dir/entries/*/.local-cache-key; do
+    [ -e "$meta" ] || continue
+    if [ -n "$(find "$meta" -mtime +30)" ]; then
+        rm -rf "$(dirname "$meta")"
+    fi
+done
+```
+
+Tune the window to your disk budget and bump cadence. Entries written by an older version that predate the metadata file are skipped by the loop above; clear those with a one-time `rm -rf cache-dir/entries/*` after upgrading, which forces a clean re-download on next use.
+
 ## Limitations
 
-- **No TTL or eviction.** Cache entries accumulate until manually deleted. For artifacts that change infrequently (e.g. Flutter SDK, updated monthly) this is fine. Clean up with `rm -rf cache-dir/entries/*`.
+- **No automatic eviction.** A save never deletes sibling entries, so a key that encodes a rolling value accumulates one entry per value over time. Entries do carry an accurate last-used timestamp, so a scheduled least-recently-used sweep can reclaim space safely — see [Eviction](#eviction). For a full reset, `rm -rf cache-dir/entries/*`.
 - **SIGKILL/OOM can orphan staging directories.** The save step rsyncs into a `.tmp-<key>-<pid>` staging directory under `entries/` and then renames it into place atomically. A normal exit, `INT`, or `TERM` cleans the staging directory up via trap, but `SIGKILL` / OOM kill / power loss between `mkdir` and `mv` leaves the `.tmp-*` directory behind. These are safe — the restore-side prefix match rejects any `.tmp-*` name so they never produce ghost cache hits — but they do consume disk space. If you notice `entries/` growing unexpectedly, sweep them with `rm -rf cache-dir/entries/.tmp-*` during a maintenance window.
 - **Each restore is a full copy.** When the marker doesn't match (version bump, first v2 restore), the full artifact is copied from cache to target. For a 1.8 GB Flutter SDK this takes a few seconds on SSD — trivial compared to the network download it replaces.
 - **macOS Spotlight indexing.** On macOS runners, restoring large cache entries (e.g. the Flutter SDK) can trigger `mds` / `mds_stores` to re-index the restored files, causing CPU spikes. Exclude the runner's root directory (or at minimum the `cache-dir`) from Spotlight indexing via System Settings > Spotlight > Privacy, or programmatically with `mdutil -i off /path/to/runner`.
