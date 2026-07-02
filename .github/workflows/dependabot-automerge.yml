@@ -1,0 +1,26 @@
+name: Dependabot auto-merge
+
+# Let green Dependabot PRs merge themselves. This enables GitHub's native
+# auto-merge, which holds the PR until the branch's required status checks pass
+# and then merges it — no human in the loop. Supply-chain soak comes from the
+# cooldown in dependabot.yml (version updates); security updates bypass that
+# cooldown by design and merge as soon as CI is green.
+on: pull_request
+
+# Dependabot-triggered runs get a read-only token by default; grant the writes
+# that enabling auto-merge needs. Nothing here approves the PR (no review is
+# required to merge), so no approval permission is requested.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
