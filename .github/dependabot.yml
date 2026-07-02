@@ -4,3 +4,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Let a release age in the ecosystem before Dependabot proposes the bump:
+    # a regression or a poisoned tag usually surfaces within two weeks. The
+    # github-actions ecosystem only accepts `default-days` (Dependabot rejects
+    # the per-semver keys other ecosystems allow), so this one value applies
+    # to patch, minor, and major bumps alike.
+    cooldown:
+      default-days: 14
