@@ -34,17 +34,6 @@ script_dir=$(
 # shellcheck source=lib/cache-common.sh
 . "${script_dir}/cache-common.sh"
 
-# Marker format version. Bumped when the on-disk layout of either the marker
-# file or the cache entries changes in a backward-incompatible way (e.g. v1
-# used hard links; v2 uses full rsync copies). The marker content is
-# "${MARKER_VERSION}:<matched-key>", where <matched-key> is the same value
-# the action emits as cache-matched-key — the caller's raw (unsanitized) key
-# on an exact hit, or the resolved on-disk entry name on a prefix hit. A
-# mismatch triggers a clean re-sync. Referenced by literal in
-# .github/workflows/ci.yml marker tests — keep those literals in sync if you
-# bump this.
-MARKER_VERSION="v2"
-
 check_only="false"
 # ${1:-}, not $1: under `set -u` a bare positional on a missing arg aborts with
 # "unbound variable" before the empty-string checks below can emit the
@@ -180,6 +169,29 @@ mark_used() {
         || printf '::debug::mark_used: could not touch %s (read-only store?)\n' "$entry_meta"
 }
 
+# Record this restore's target so cache-gc.sh can reclaim the per-runner copy
+# once the entry goes cold. Records live in a parallel targets/<encoded-key>/
+# tree (a sibling of entries/), NOT inside the entry — writing into the entry
+# would bump its directory mtime, which prefix/restore-keys resolution sorts on.
+# One file per target, named by the target-path hash: concurrent restores of
+# the same key to different runner targets write different files, so no lock is
+# needed even on the constant-time skip path. Content is the absolute target;
+# the file's mtime is this restore's time. Best-effort — a read-only store must
+# not fail an otherwise-good restore.
+record_target() {
+    # Record the LEXICALLY-NORMALIZED path (see normalize_path). gc locks
+    # cache-target-<recorded-path> and rm's the recorded path; the restore steps
+    # lock the same normalized string (action.yml normalizes inputs.path before
+    # the lock), so two spellings of one physical target (a trailing slash, //,
+    # /./) can't split the per-target lock and let gc race a live restore.
+    rt_norm=$(normalize_path "$path_to_cache")
+    rt_dir="${cache_dir}/${TARGETS_DIR_NAME}/$(basename "$1")"
+    mkdir -p "$rt_dir" 2>/dev/null || return 0
+    rt_file="${rt_dir}/$(sha256_hex "$rt_norm")"
+    printf '%s' "$rt_norm" > "$rt_file" 2>/dev/null \
+        || printf '::debug::record_target: could not write %s (read-only store?)\n' "$rt_file"
+}
+
 do_restore() {
     entry_path="$1"
     matched_key="$2"
@@ -209,6 +221,7 @@ do_restore() {
             printf 'skip-lock=true\n' >> "$GITHUB_OUTPUT"
         fi
         mark_used "$entry_path"
+        record_target "$entry_path"
         return
     fi
 
@@ -253,6 +266,7 @@ do_restore() {
     fi
 
     mark_used "$entry_path"
+    record_target "$entry_path"
 }
 
 encoded_key=$(encode_key "$cache_key")

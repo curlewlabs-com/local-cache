@@ -38,7 +38,7 @@ runs:
     # so a local-cache@v3 consumer sees deterministic behavior across
     # reruns. See AGENTS.md for the rationale.
     - name: Save cache
-      uses: curlewlabs-com/local-mutex@v2.0.1
+      uses: curlewlabs-com/local-mutex@v2.1.0
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_KEY: ${{ inputs.key }}

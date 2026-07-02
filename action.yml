@@ -29,7 +29,8 @@ inputs:
 outputs:
   cache-hit:
     description: "'true' if an exact key match was found, 'false' otherwise."
-    # Phase 1 (check) sets this directly; Phase 2 propagates via output-file.
+    # Phase 1 surfaces it from the target-locked quick check; Phase 2 from the
+    # restore. Both come via local-mutex's output-file (see the surface steps).
     value: ${{ steps.check.outputs.cache-hit || steps.restore.outputs.cache-hit }}
   cache-matched-key:
     description: >-
@@ -40,49 +41,87 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    # Phase 1: Parallel Quick Check.
-    # If the target already possesses the requested key (steady state), we
-    # finish here in parallel without any serialization overhead.
-    - name: Quick check
-      id: check
+    # Phase 0: normalize the target path to one canonical spelling so the
+    # per-target lock name is derived from it. Two spellings of the same
+    # directory (a trailing slash, //, /./) would otherwise take different
+    # cache-target-<path> locks and let the gc reclaim a target a concurrent
+    # restore is using. Only the LOCK NAME is canonicalized here; the restore
+    # still operates on the caller's own path (same physical dir), and
+    # cache-restore.sh records the same normalized path for the gc to lock on.
+    - name: Normalize target path
+      id: norm
       shell: sh
       env:
         INPUT_PATH: ${{ inputs.path }}
-        INPUT_KEY: ${{ inputs.key }}
-        INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
-        INPUT_RESTORE_KEYS: ${{ inputs.restore-keys }}
+        GH_ACTION_PATH: ${{ github.action_path }}
       run: |
-        sh "${{ github.action_path }}/lib/cache-restore.sh" \
-          --check \
-          "$INPUT_PATH" \
-          "$INPUT_KEY" \
-          "$INPUT_CACHE_DIR" \
-          "$INPUT_RESTORE_KEYS"
+        . "$GH_ACTION_PATH/lib/cache-common.sh"
+        printf 'path=%s\n' "$(normalize_path "$INPUT_PATH")" >> "$GITHUB_OUTPUT"
 
-    # Phase 2: Serialized Restore / Coordination.
-    # If Phase 1 missed or found a stale target, we take a per-key lock
-    # via local-mutex to perform the rsync or record a miss.
-    #
-    # local-mutex is pinned to an immutable patch tag (not the floating
-    # major `@v2`) so a local-cache@v3 consumer sees deterministic
-    # behavior across reruns. See AGENTS.md for the rationale.
-    - name: Restore (locked)
-      if: steps.check.outputs.skip-lock != 'true'
-      id: restore-lock
-      uses: curlewlabs-com/local-mutex@v2.0.1
+    # Phase 1: Quick check under the per-TARGET lock.
+    # If the target already holds the requested key (steady state) we finish
+    # here without taking the per-key lock. The lock is keyed by the target
+    # PATH, not the cache key, so distinct runners restoring to their own paths
+    # never contend — this stays parallel across the fleet. What it does
+    # serialize against is gc's target reclaim (gc holds the same
+    # cache-target-<path> lock): is_current and the last-use bump can't
+    # interleave with a reclaim of that same target. local-mutex captures the
+    # check's GITHUB_OUTPUT writes in output-file; the next step surfaces them.
+    - name: Quick check (target-locked)
+      id: check-lock
+      uses: curlewlabs-com/local-mutex@v2.1.0
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_KEY: ${{ inputs.key }}
         INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
         INPUT_RESTORE_KEYS: ${{ inputs.restore-keys }}
+        GH_ACTION_PATH: ${{ github.action_path }}
       with:
-        name: cache-save-${{ inputs.key }}
+        name: cache-target-${{ steps.norm.outputs.path }}
         run: |
-          sh "${{ github.action_path }}/lib/cache-restore.sh" \
+          sh "$GH_ACTION_PATH/lib/cache-restore.sh" \
+            --check \
             "$INPUT_PATH" \
             "$INPUT_KEY" \
             "$INPUT_CACHE_DIR" \
             "$INPUT_RESTORE_KEYS"
+
+    - name: Surface quick-check outputs
+      id: check
+      shell: sh
+      run: cat "${{ steps.check-lock.outputs.output-file }}" >> "$GITHUB_OUTPUT"
+
+    # Phase 2: Serialized restore / coordination.
+    # If Phase 1 missed or found a stale target, take the per-KEY lock (protects
+    # the entry as the rsync SOURCE against gc eviction) and, nested inside it,
+    # the per-TARGET lock (protects the target as the rsync DEST against gc
+    # reclaim). The nest order is key ⊃ target — the same order gc acquires
+    # them — so a restore and a sweep can never deadlock. The inner lock is
+    # taken via local-mutex's own CLI ($LOCAL_MUTEX_CLI), inheriting its lock
+    # domain ($LOCAL_MUTEX_LOCK_DIR), so it lands in the same domain as Phase 1
+    # and gc. The item is passed to the inner command via the environment
+    # (INPUT_*/GH_ACTION_PATH already exported here and inherited), never
+    # string-interpolated into the command.
+    #
+    # local-mutex is pinned to an immutable patch tag (not the floating major
+    # `@v2`) so a local-cache@v3 consumer sees deterministic behavior across
+    # reruns. See AGENTS.md for the rationale.
+    - name: Restore (locked)
+      if: steps.check.outputs.skip-lock != 'true'
+      id: restore-lock
+      uses: curlewlabs-com/local-mutex@v2.1.0
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_KEY: ${{ inputs.key }}
+        INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
+        INPUT_RESTORE_KEYS: ${{ inputs.restore-keys }}
+        GH_ACTION_PATH: ${{ github.action_path }}
+        NORM_PATH: ${{ steps.norm.outputs.path }}
+      with:
+        name: cache-save-${{ inputs.key }}
+        run: |
+          sh "$LOCAL_MUTEX_CLI" "cache-target-$NORM_PATH" \
+            'sh "$GH_ACTION_PATH/lib/cache-restore.sh" "$INPUT_PATH" "$INPUT_KEY" "$INPUT_CACHE_DIR" "$INPUT_RESTORE_KEYS"'
 
     # Propagate cache-restore.sh outputs across the composite action
     # boundary. local-mutex captures them in output-file; we read them
