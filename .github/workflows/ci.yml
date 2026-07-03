@@ -1086,6 +1086,52 @@ jobs:
           rm -f "$tally"
           echo "GC reclaim owner-coldness gate: OK"
 
+      # The per-key lock a restore holds must name the entry it actually reads, so
+      # it is the very lock gc takes to evict that entry. On a restore-keys
+      # (prefix) hit the served entry's stored key differs from the requested key;
+      # Phase 1 resolves and emits that stored key as matched-key, and Phase 2
+      # locks cache-save-<matched-key>. Locking the requested key instead would
+      # leave the rsync SOURCE unprotected and let gc rm it mid-copy. Assert the
+      # resolved lock key is the entry's stored key — the same string gc locks on.
+      - name: Restore locks on the matched entry key, not the requested key
+        run: |
+          . lib/cache-common.sh
+          RC=/tmp/rc-cache-matched
+          mkdir -p /tmp/rc-src
+          echo payload > /tmp/rc-src/data.txt
+          sh lib/cache-save.sh /tmp/rc-src pfx-abc123 "$RC"
+          out=$(mktemp)
+          # Requested key has no exact entry; restore-keys pfx- matches pfx-abc123.
+          GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --check /tmp/rc-tgt pfx-req "$RC" 'pfx-'
+          mk=$(grep '^matched-key=' "$out" | cut -d= -f2-)
+          mn=$(grep '^matched-name=' "$out" | cut -d= -f2-)
+          [ "$mk" = "pfx-abc123" ] \
+            || (echo "Phase 2 must lock the stored key pfx-abc123 (gc's evict lock), got matched-key=$mk" && exit 1)
+          [ "$mn" = "$(encode_key pfx-abc123)" ] \
+            || (echo "matched-name should be the stored entry, got $mn" && exit 1)
+          # gc locks cache-save-<raw_key>, raw_key = the entry's stored key: identical.
+          [ "$(cat "$RC/entries/$(encode_key pfx-abc123)/.local-cache-key")" = "$mk" ] \
+            || (echo "gc lock key and restore matched-key must be the same string" && exit 1)
+          rm -f "$out"
+          echo "Restore matched-key == gc evict key (prefix source-eviction safe): OK"
+
+      # If gc evicts the resolved entry in the window between Phase 1 and Phase 2,
+      # Phase 2 finds it gone and must miss cleanly — never copy a half-deleted
+      # source or disturb the caller's target.
+      - name: Restore of an entry evicted mid-flight misses without touching the target
+        run: |
+          RC=/tmp/rc-cache-vanished
+          mkdir -p "$RC/entries" /tmp/rc-v-tgt
+          echo keep > /tmp/rc-v-tgt/preexisting.txt
+          out=$(mktemp)
+          GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --restore k-doesnotexist /tmp/rc-v-tgt any-key "$RC"
+          grep -q '^cache-hit=false$' "$out" \
+            || (echo "a vanished entry must miss (cache-hit=false)" && exit 1)
+          [ "$(cat /tmp/rc-v-tgt/preexisting.txt)" = "keep" ] \
+            || (echo "miss must not disturb the caller's target" && exit 1)
+          rm -f "$out"
+          echo "Restore of evicted-mid-flight entry: clean miss, target untouched: OK"
+
       # gc takes the same locks save/restore do; without the lock CLI there is no
       # safe way to proceed, so it must refuse rather than sweep unlocked.
       - name: GC refuses to run without a lock CLI
@@ -1240,3 +1286,142 @@ jobs:
           [ ! -d "$entry" ] || (echo "gc action did not evict the cold entry" && exit 1)
           [ ! -e /tmp/gc-act-tgt ] || (echo "gc action did not reclaim the cold target" && exit 1)
           echo "GC action end-to-end (real local-mutex wiring): OK"
+
+  # Concurrency stress. The deterministic tests above pin the lock NAMES; this
+  # job exercises the real thing — many prefix-restores racing gc on a shared
+  # cache-dir through the actual two-phase lock flow — and asserts the one
+  # invariant that holds under every interleaving: a restore target is either
+  # absent (a clean miss) or byte-identical to its source, never a partial copy.
+  # The eviction race window is narrow, so per-machine detection is
+  # probabilistic; the matrix fans the same run across many machines to raise the
+  # aggregate odds and diversify timing (dash vs bash-3.2, different schedulers).
+  # It never false-fails on correct code (the invariant is timing-independent),
+  # and a deadlock is caught by the job timeout rather than hanging CI. Scale by
+  # editing the replica list; macOS is capped to stay under the hosted-runner
+  # concurrency limit.
+  stress:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        replica: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        include:
+          - os: macos-latest
+            replica: 1
+          - os: macos-latest
+            replica: 2
+          - os: macos-latest
+            replica: 3
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      LOCAL_MUTEX_CLI: ${{ github.workspace }}/.local-mutex/lib/local-mutex.sh
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - name: Check out local-mutex (pinned)
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: curlewlabs-com/local-mutex
+          ref: v2.1.0
+          path: .local-mutex
+      - name: Stress — prefix-restores racing gc on a shared cache-dir
+        env:
+          ROUNDS: 30
+          NENTRIES: 5
+        run: |
+          set -eu
+          WS="$PWD"
+          . "$WS/lib/cache-common.sh"
+          WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+          CD="$WORK/cache"; mkdir -p "$CD/entries"
+
+          # ~250 KB payload across several files so each rsync takes measurable
+          # time, widening the eviction race window.
+          PL="$WORK/payload"; mkdir -p "$PL/sub"
+          i=0
+          while [ "$i" -lt 30 ]; do
+            yes "content-line-$i-payload" 2>/dev/null | head -n 200 > "$PL/f$i.txt"
+            i=$((i + 1))
+          done
+          printf 'nested\n' > "$PL/sub/n.txt"
+
+          # Phase 2 inner: target-lock nesting the restore of the pre-resolved
+          # entry. Args arrive by env (like action.yml), never interpolated.
+          cat > "$WORK/phase2.sh" <<'EOF'
+          #!/bin/sh
+          set -eu
+          sh "$CLI" "cache-target-$NP" 'sh "$RSH" --restore "$MN" "$RP" "$RK" "$CDIR"'
+          EOF
+
+          # One restore through the real two-phase flow: Phase 1 target-locked
+          # check + resolution, Phase 2 matched-key-lock nesting target-lock.
+          restore_flow() {
+            rf_path="$1"; rf_key="$2"; rf_rk="$3"
+            rf_np=$(normalize_path "$rf_path")
+            rf_p1="$WORK/p1.$$.$(basename "$rf_path")"
+            GITHUB_OUTPUT="$rf_p1" sh "$LOCAL_MUTEX_CLI" "cache-target-$rf_np" \
+              "sh '$WS/lib/cache-restore.sh' --check '$rf_path' '$rf_key' '$CD' '$rf_rk'" >/dev/null 2>&1 || true
+            rf_skip=$(grep '^skip-lock=' "$rf_p1" 2>/dev/null | cut -d= -f2- || true)
+            rf_mk=$(grep '^matched-key=' "$rf_p1" 2>/dev/null | cut -d= -f2- || true)
+            rf_mn=$(grep '^matched-name=' "$rf_p1" 2>/dev/null | cut -d= -f2- || true)
+            rm -f "$rf_p1"
+            if [ "$rf_skip" = "true" ]; then return 0; fi
+            if [ -z "$rf_mk" ]; then return 0; fi
+            MN="$rf_mn" RP="$rf_path" RK="$rf_key" CDIR="$CD" NP="$rf_np" \
+              CLI="$LOCAL_MUTEX_CLI" RSH="$WS/lib/cache-restore.sh" \
+              sh "$LOCAL_MUTEX_CLI" "cache-save-$rf_mk" "sh '$WORK/phase2.sh'" >/dev/null 2>&1 || true
+          }
+
+          corrupt=0; hits=0; misses=0; round=0
+          while [ "$round" -lt "$ROUNDS" ]; do
+            round=$((round + 1))
+            # Ensure each entry exists and is backdated cold, so gc will evict it.
+            j=1
+            while [ "$j" -le "$NENTRIES" ]; do
+              ee="$CD/entries/$(encode_key "stress-${j}-v1")"
+              if [ ! -d "$ee" ]; then
+                sh "$WS/lib/cache-save.sh" "$PL" "stress-${j}-v1" "$CD" >/dev/null 2>&1 || true
+              fi
+              if [ -f "$ee/$ENTRY_KEY_NAME" ]; then
+                touch -t 202001010000 "$ee/$ENTRY_KEY_NAME" || true
+              fi
+              j=$((j + 1))
+            done
+
+            # Fire all prefix-restores (each to its own fresh target) + gc.
+            j=1
+            while [ "$j" -le "$NENTRIES" ]; do
+              restore_flow "$WORK/tgt-${round}-${j}" "stress-${j}-req" "stress-${j}-" &
+              j=$((j + 1))
+            done
+            sh "$LOCAL_MUTEX_CLI" "cache-gc" "sh '$WS/lib/cache-gc.sh' --apply --max-age-days 1 '$CD'" >/dev/null 2>&1 &
+            wait
+
+            # Invariant: each fresh target is absent (clean miss) or identical.
+            j=1
+            while [ "$j" -le "$NENTRIES" ]; do
+              tgt="$WORK/tgt-${round}-${j}"
+              if [ -e "$tgt" ]; then
+                if diff -r -x "$MARKER_NAME" -x "$ENTRY_KEY_NAME" "$PL" "$tgt" >/dev/null 2>&1; then
+                  hits=$((hits + 1))
+                else
+                  corrupt=$((corrupt + 1))
+                  echo "CORRUPT: round $round target $tgt differs from source payload"
+                fi
+              else
+                misses=$((misses + 1))
+              fi
+              j=$((j + 1))
+            done
+          done
+
+          echo "stress: rounds=$ROUNDS restorers/round=$NENTRIES hits=$hits misses=$misses corrupt=$corrupt"
+          if [ "$corrupt" -ne 0 ]; then
+            echo "FAIL: $corrupt corrupt restore(s) — gc raced a live restore"
+            exit 1
+          fi
+          if [ $((hits + misses)) -eq 0 ]; then
+            echo "FAIL: no restores ran"
+            exit 1
+          fi
+          echo "Concurrency stress: no partial/corrupt restore across $ROUNDS rounds: OK"
