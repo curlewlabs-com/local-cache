@@ -1,0 +1,61 @@
+name: 'Runner Local Cache (GC)'
+description: >-
+  Evict least-recently-used cache entries and their restore targets from the
+  local disk cache on self-hosted runners. Intended to run on a schedule.
+author: 'curlewlabs-com'
+branding:
+  icon: 'trash-2'
+  color: 'blue'
+
+inputs:
+  cache-dir:
+    description: >-
+      Absolute path to the local cache directory to sweep. Must match the
+      value used by the restore and save steps.
+    required: true
+  max-age-days:
+    description: >-
+      Evict entries not restored in this many days, and their recorded restore
+      targets. Keep this comfortably above your longest job — target deletion
+      is gated on a time threshold, not a lock.
+    required: false
+    default: '30'
+  apply:
+    description: >-
+      Set 'true' to actually delete. Any other value is a dry run that only
+      reports what would be reclaimed.
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    # A single store-wide lock so two gc runs (e.g. a cron and a manual
+    # dispatch) cannot double-process. It is also the handoff that gives
+    # cache-gc.sh local-mutex's CLI ($LOCAL_MUTEX_CLI): the sweep re-invokes it
+    # to take the very same per-key (cache-save-<key>) and per-target
+    # (cache-target-<path>) locks the save/restore paths hold, so it evicts a
+    # cold entry only under that entry's key lock and reclaims a target only
+    # under that target's lock — a sweep never races a concurrent restore/save.
+    #
+    # Pinned to the immutable patch tag (not the floating major @v2) so a
+    # local-cache@v3 consumer sees deterministic behavior across reruns. See
+    # AGENTS.md for the rationale.
+    - name: Garbage-collect
+      uses: curlewlabs-com/local-mutex@v2.1.0
+      env:
+        INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
+        INPUT_MAX_AGE_DAYS: ${{ inputs.max-age-days }}
+        INPUT_APPLY: ${{ inputs.apply }}
+        GC_SCRIPT: ${{ github.action_path }}/../lib/cache-gc.sh
+      with:
+        name: cache-gc
+        run: |
+          set -- "$INPUT_CACHE_DIR"
+          if [ -n "$INPUT_MAX_AGE_DAYS" ]; then
+            set -- --max-age-days "$INPUT_MAX_AGE_DAYS" "$@"
+          fi
+          if [ "$INPUT_APPLY" = "true" ]; then
+            set -- --apply "$@"
+          fi
+          sh "$GC_SCRIPT" "$@"

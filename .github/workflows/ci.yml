@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.0
       - name: Shellcheck
-        run: shellcheck lib/cache-common.sh lib/cache-restore.sh lib/cache-save.sh
+        run: shellcheck lib/cache-common.sh lib/cache-restore.sh lib/cache-save.sh lib/cache-gc.sh
 
   # actionlint catches the inline `run:` shell blocks in this very workflow
   # that the standalone `shellcheck` job above does not see. Without this,
@@ -37,8 +37,22 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # cache-gc.sh re-invokes itself through local-mutex's CLI to take the same
+      # per-key/per-target locks the actions hold, so the direct-script gc tests
+      # below need it. Point at a checkout of the exact version the actions pin —
+      # the real primitive, not a stub. Steps that go through an action get their
+      # own copy from that action's `uses:` and ignore this.
+      LOCAL_MUTEX_CLI: ${{ github.workspace }}/.local-mutex/lib/local-mutex.sh
     steps:
       - uses: actions/checkout@v7.0.0
+
+      - name: Check out local-mutex (pinned) for the direct-script gc lock tests
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: curlewlabs-com/local-mutex
+          ref: v2.1.0
+          path: .local-mutex
 
       - name: Restore against non-existent cache dir (cold start)
         id: restore-cold
@@ -885,3 +899,529 @@ jobs:
             fi
             echo "${script}: missing-arg guard OK"
           done
+
+      # cache-gc eviction. A served restore records its target in a parallel
+      # targets/<k>/ tree (a sibling of entries/, kept out of the entry so it
+      # cannot move the entry's mtime); the gc reclaims cold entries AND those
+      # recorded per-runner copies. These assert: the record lands in the
+      # parallel tree and the entry's mtime is untouched; a cold entry and its
+      # target are evicted while a hot one survives; a dry run touches nothing;
+      # a target modified within the window (an in-progress build) spares its
+      # entry; and a corrupted/forged record can never widen the sweep to a
+      # guarded path.
+      - name: Restore records its target in the parallel tree without touching the entry
+        run: |
+          . lib/cache-common.sh
+          stat_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+          GC=/tmp/gc-cache-record
+          mkdir -p /tmp/gc-r-src
+          echo data > /tmp/gc-r-src/data.txt
+          sh lib/cache-save.sh /tmp/gc-r-src rec-key "$GC"
+          entry="$GC/entries/$(encode_key rec-key)"
+          # Age the entry dir so we can prove a restore does not bump its mtime —
+          # prefix/restore-keys resolution sorts entries on it.
+          touch -t 202001010000 "$entry"
+          dir_before=$(stat_mtime "$entry")
+
+          sh lib/cache-restore.sh /tmp/gc-r-tgt rec-key "$GC" ""
+
+          # The record lands in the parallel targets/ tree, not the entry.
+          rec="$GC/targets/$(encode_key rec-key)/$(sha256_hex /tmp/gc-r-tgt)"
+          [ -f "$rec" ] || (echo "expected a target record in the parallel tree" && exit 1)
+          [ "$(cat "$rec")" = /tmp/gc-r-tgt ] \
+            || (echo "record content wrong: $(cat "$rec")" && exit 1)
+          # The entry gains no records child and keeps its mtime; nothing leaks
+          # into the restored target either.
+          [ ! -e "$entry/targets" ] || (echo "records leaked into the entry" && exit 1)
+          [ "$(stat_mtime "$entry")" = "$dir_before" ] \
+            || (echo "restore moved the entry dir mtime — corrupts prefix selection" && exit 1)
+          [ ! -e /tmp/gc-r-tgt/targets ] \
+            || (echo "records leaked into the restored target" && exit 1)
+          echo "Target recording (parallel tree, entry untouched): OK"
+
+      - name: GC evicts cold entries and their targets, keeps hot ones
+        run: |
+          . lib/cache-common.sh
+          GC=/tmp/gc-cache-evict
+          mkdir -p /tmp/gc-e-cold-src /tmp/gc-e-hot-src
+          echo cold > /tmp/gc-e-cold-src/data.txt
+          echo hot > /tmp/gc-e-hot-src/data.txt
+          sh lib/cache-save.sh /tmp/gc-e-cold-src ecold-key "$GC"
+          sh lib/cache-save.sh /tmp/gc-e-hot-src ehot-key "$GC"
+          sh lib/cache-restore.sh /tmp/gc-e-cold-tgt ecold-key "$GC" ""
+          sh lib/cache-restore.sh /tmp/gc-e-hot-tgt ehot-key "$GC" ""
+          cold_entry="$GC/entries/$(encode_key ecold-key)"
+          hot_entry="$GC/entries/$(encode_key ehot-key)"
+
+          # Age the cold entry's last-use and its whole restored target.
+          touch -t 202001010000 "$cold_entry/.local-cache-key"
+          find /tmp/gc-e-cold-tgt -exec touch -t 202001010000 {} +
+
+          # Dry run touches nothing.
+          sh lib/cache-gc.sh --max-age-days 1 "$GC"
+          { [ -d "$cold_entry" ] && [ -d /tmp/gc-e-cold-tgt ]; } \
+            || (echo "dry run must not delete anything" && exit 1)
+          echo "GC dry run keeps everything: OK"
+
+          # Apply: cold entry + its target gone; hot entry + its target kept.
+          sh lib/cache-gc.sh --apply --max-age-days 1 "$GC"
+          [ ! -d "$cold_entry" ] || (echo "cold entry not evicted" && exit 1)
+          [ ! -e /tmp/gc-e-cold-tgt ] || (echo "cold target not reclaimed" && exit 1)
+          [ -d "$hot_entry" ] || (echo "hot entry wrongly evicted" && exit 1)
+          [ -d /tmp/gc-e-hot-tgt ] || (echo "hot target wrongly reclaimed" && exit 1)
+          echo "GC evicts cold entry + target, keeps hot: OK"
+
+      - name: GC spares a cold entry whose target was modified within the window
+        run: |
+          . lib/cache-common.sh
+          GC=/tmp/gc-cache-live
+          mkdir -p /tmp/gc-l-src
+          echo live > /tmp/gc-l-src/data.txt
+          sh lib/cache-save.sh /tmp/gc-l-src elive-key "$GC"
+          sh lib/cache-restore.sh /tmp/gc-l-tgt elive-key "$GC" ""
+          live_entry="$GC/entries/$(encode_key elive-key)"
+          # Entry looks cold, but the target has a freshly-written file.
+          touch -t 202001010000 "$live_entry/.local-cache-key"
+          echo building > /tmp/gc-l-tgt/inprogress.txt
+          sh lib/cache-gc.sh --apply --max-age-days 1 "$GC"
+          [ -d "$live_entry" ] || (echo "entry with a live target must be kept" && exit 1)
+          [ -d /tmp/gc-l-tgt ] || (echo "a live target must not be reclaimed" && exit 1)
+          # The record must survive too, or the live copy is orphaned — a later
+          # sweep could never reclaim it once it goes idle.
+          [ -f "$GC/targets/$(encode_key elive-key)/$(sha256_hex /tmp/gc-l-tgt)" ] \
+            || (echo "live target's record was dropped — copy would be orphaned" && exit 1)
+          echo "GC spares cold entry with a live target (record kept): OK"
+
+      - name: GC spares a dangerous target path but still reclaims its cold entry
+        run: |
+          . lib/cache-common.sh
+          GC=/tmp/gc-cache-danger
+          mkdir -p /tmp/gc-d-src /tmp/gc-d-home
+          echo x > /tmp/gc-d-src/data.txt
+          sh lib/cache-save.sh /tmp/gc-d-src edanger-key "$GC"
+          dentry="$GC/entries/$(encode_key edanger-key)"
+          # Forge a record pointing at the HOME we pass in, and age the entry.
+          mkdir -p "$GC/targets/$(encode_key edanger-key)"
+          printf '%s' /tmp/gc-d-home > "$GC/targets/$(encode_key edanger-key)/forged"
+          touch -t 202001010000 "$dentry/.local-cache-key"
+          # The reclaim step guards the forged path (never rm a HOME/root/
+          # workspace), so HOME survives — but the cold entry and its forged
+          # record are still reclaimed, so one bad record can't pin an entry in
+          # the store forever.
+          HOME=/tmp/gc-d-home sh lib/cache-gc.sh --apply --max-age-days 1 "$GC"
+          [ -d /tmp/gc-d-home ] || (echo "gc deleted a guarded HOME path" && exit 1)
+          [ ! -d "$dentry" ] || (echo "cold entry should still be reclaimed" && exit 1)
+          echo "GC dangerous-target guard (path spared, entry reclaimed): OK"
+
+      # Ownership is decided by the target's marker, not by which entry recorded
+      # it: a target re-restored to a new key belongs to that key, even though
+      # the first key still holds a stale record naming it. Evicting the first
+      # (cold) key must not reclaim a target the second (hot) key now owns.
+      - name: GC spares a target owned by a different key than the evicted one
+        run: |
+          . lib/cache-common.sh
+          GC=/tmp/gc-cache-own
+          mkdir -p /tmp/gc-o-k1-src /tmp/gc-o-k2-src
+          echo one > /tmp/gc-o-k1-src/data.txt
+          echo two > /tmp/gc-o-k2-src/data.txt
+          sh lib/cache-save.sh /tmp/gc-o-k1-src own-k1 "$GC"
+          sh lib/cache-save.sh /tmp/gc-o-k2-src own-k2 "$GC"
+          # Restore k1 then k2 into the SAME target: it ends up owned by k2
+          # (marker v2:own-k2), while k1 still holds a stale record naming it.
+          sh lib/cache-restore.sh /tmp/gc-o-tgt own-k1 "$GC" ""
+          sh lib/cache-restore.sh /tmp/gc-o-tgt own-k2 "$GC" ""
+          [ "$(cat /tmp/gc-o-tgt/.local-cache-restore)" = "v2:own-k2" ] \
+            || (echo "target should be owned by k2 after the second restore" && exit 1)
+          k1_entry="$GC/entries/$(encode_key own-k1)"
+          k2_entry="$GC/entries/$(encode_key own-k2)"
+          touch -t 202001010000 "$k1_entry/.local-cache-key"   # k1 cold, k2 hot
+          sh lib/cache-gc.sh --apply --max-age-days 1 "$GC"
+          [ ! -d "$k1_entry" ] || (echo "cold k1 entry should be evicted" && exit 1)
+          [ -d "$k2_entry" ] || (echo "hot k2 entry wrongly evicted" && exit 1)
+          [ -e /tmp/gc-o-tgt ] \
+            || (echo "target wrongly reclaimed — it belongs to hot k2, not cold k1" && exit 1)
+          echo "GC target ownership (marker, not record): OK"
+
+      # The reclaim step re-checks the owning entry's coldness UNDER the target
+      # lock — the guard that catches a concurrent skip-hit restore, which bumps
+      # the owner's last-use while holding that lock and leaves the target's
+      # files untouched (so the mtime backstop can't see it). Exercised on the
+      # internal reclaim subcommand with a hot vs cold owner, target files aged
+      # so the owner-coldness gate is the only thing that can decide.
+      - name: GC reclaim honors the owner-coldness gate under the target lock
+        run: |
+          . lib/cache-common.sh
+          GC=/tmp/gc-cache-ownercold
+          mkdir -p /tmp/gc-oc-src
+          echo d > /tmp/gc-oc-src/data.txt
+          sh lib/cache-save.sh /tmp/gc-oc-src oc-key "$GC"
+          sh lib/cache-restore.sh /tmp/gc-oc-tgt oc-key "$GC" ""
+          meta="$GC/entries/$(encode_key oc-key)/.local-cache-key"
+          now=$(date +%s); cutoff=$((now - 86400)); tally=$(mktemp)
+          find /tmp/gc-oc-tgt -exec touch -t 202001010000 {} +
+          touch "$meta"   # hot owner -> keep the target and signal live (exit 3)
+          set +e
+          GC_TARGET_PATH=/tmp/gc-oc-tgt GC_OWNER_KEY=oc-key GC_OWNER_META="$meta" \
+            GC_MAX_AGE_DAYS=1 GC_APPLY=true GC_VERB=removed GC_TARGETS_TALLY="$tally" \
+            GC_NOW="$now" GC_CUTOFF="$cutoff" \
+            sh lib/cache-gc.sh --__reclaim-target
+          rc=$?
+          set -e
+          [ "$rc" = 3 ] \
+            || (echo "hot owner should signal live (exit 3), got $rc" && exit 1)
+          [ -e /tmp/gc-oc-tgt ] \
+            || (echo "reclaim deleted a target whose owner is hot — a live job would break" && exit 1)
+          touch -t 202001010000 "$meta"   # cold owner -> reclaim (exit 0)
+          set +e
+          GC_TARGET_PATH=/tmp/gc-oc-tgt GC_OWNER_KEY=oc-key GC_OWNER_META="$meta" \
+            GC_MAX_AGE_DAYS=1 GC_APPLY=true GC_VERB=removed GC_TARGETS_TALLY="$tally" \
+            GC_NOW="$now" GC_CUTOFF="$cutoff" \
+            sh lib/cache-gc.sh --__reclaim-target
+          rc=$?
+          set -e
+          [ "$rc" = 0 ] \
+            || (echo "cold owner should reclaim (exit 0), got $rc" && exit 1)
+          [ ! -e /tmp/gc-oc-tgt ] \
+            || (echo "reclaim did not delete a target whose owner is cold" && exit 1)
+          rm -f "$tally"
+          echo "GC reclaim owner-coldness gate: OK"
+
+      # The per-key lock a restore holds must name the entry it actually reads, so
+      # it is the very lock gc takes to evict that entry. On a restore-keys
+      # (prefix) hit the served entry's stored key differs from the requested key;
+      # Phase 1 resolves and emits that stored key as matched-key, and Phase 2
+      # locks cache-save-<matched-key>. Locking the requested key instead would
+      # leave the rsync SOURCE unprotected and let gc rm it mid-copy. Assert the
+      # resolved lock key is the entry's stored key — the same string gc locks on.
+      - name: Restore locks on the matched entry key, not the requested key
+        run: |
+          . lib/cache-common.sh
+          RC=/tmp/rc-cache-matched
+          mkdir -p /tmp/rc-src
+          echo payload > /tmp/rc-src/data.txt
+          sh lib/cache-save.sh /tmp/rc-src pfx-abc123 "$RC"
+          out=$(mktemp)
+          # Requested key has no exact entry; restore-keys pfx- matches pfx-abc123.
+          GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --check /tmp/rc-tgt pfx-req "$RC" 'pfx-'
+          mk=$(grep '^matched-key=' "$out" | cut -d= -f2-)
+          mn=$(grep '^matched-name=' "$out" | cut -d= -f2-)
+          [ "$mk" = "pfx-abc123" ] \
+            || (echo "Phase 2 must lock the stored key pfx-abc123 (gc's evict lock), got matched-key=$mk" && exit 1)
+          [ "$mn" = "$(encode_key pfx-abc123)" ] \
+            || (echo "matched-name should be the stored entry, got $mn" && exit 1)
+          # gc locks cache-save-<raw_key>, raw_key = the entry's stored key: identical.
+          [ "$(cat "$RC/entries/$(encode_key pfx-abc123)/.local-cache-key")" = "$mk" ] \
+            || (echo "gc lock key and restore matched-key must be the same string" && exit 1)
+          rm -f "$out"
+          echo "Restore matched-key == gc evict key (prefix source-eviction safe): OK"
+
+      # If gc evicts the resolved entry in the window between Phase 1 and Phase 2,
+      # Phase 2 finds it gone and must miss cleanly — never copy a half-deleted
+      # source or disturb the caller's target.
+      - name: Restore of an entry evicted mid-flight misses without touching the target
+        run: |
+          RC=/tmp/rc-cache-vanished
+          mkdir -p "$RC/entries" /tmp/rc-v-tgt
+          echo keep > /tmp/rc-v-tgt/preexisting.txt
+          out=$(mktemp)
+          GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --restore k-doesnotexist /tmp/rc-v-tgt any-key "$RC"
+          grep -q '^cache-hit=false$' "$out" \
+            || (echo "a vanished entry must miss (cache-hit=false)" && exit 1)
+          [ "$(cat /tmp/rc-v-tgt/preexisting.txt)" = "keep" ] \
+            || (echo "miss must not disturb the caller's target" && exit 1)
+          rm -f "$out"
+          echo "Restore of evicted-mid-flight entry: clean miss, target untouched: OK"
+
+      # gc takes the same locks save/restore do; without the lock CLI there is no
+      # safe way to proceed, so it must refuse rather than sweep unlocked.
+      - name: GC refuses to run without a lock CLI
+        run: |
+          GC=/tmp/gc-cache-nocli
+          mkdir -p "$GC/entries"
+          set +e
+          out=$(env -u LOCAL_MUTEX_CLI sh lib/cache-gc.sh --apply "$GC" 2>&1); rc=$?
+          set -e
+          [ "$rc" -eq 1 ] \
+            || (echo "expected exit 1 without LOCAL_MUTEX_CLI, got $rc. Output: $out" && exit 1)
+          echo "$out" | grep -q 'LOCAL_MUTEX_CLI' \
+            || (echo "expected a LOCAL_MUTEX_CLI error, got: $out" && exit 1)
+          echo "GC no-lock-CLI refusal: OK"
+
+      # max-age-days=0 makes cutoff=now (hot reads cold) and find -mtime -0 match
+      # nothing — both guards fail open. Leading zeros are octal traps. All must
+      # be rejected, not silently mis-windowed.
+      - name: GC rejects unsafe max-age-days values
+        run: |
+          GC=/tmp/gc-cache-badage
+          mkdir -p "$GC/entries"
+          for bad in 0 08 010 -1 abc; do
+            set +e
+            out=$(sh lib/cache-gc.sh --apply --max-age-days "$bad" "$GC" 2>&1); rc=$?
+            set -e
+            [ "$rc" != 0 ] \
+              || (echo "max-age-days '$bad' must be rejected (got rc 0): $out" && exit 1)
+          done
+          echo "GC max-age-days validation: OK"
+
+      # A per-target lock and record must identify one physical target by one
+      # canonical string, or two spellings (trailing slash, //) split the lock
+      # and let gc race a live restore. All spellings must collapse to one record
+      # and gc must reclaim the single normalized target.
+      - name: GC target identity is normalized across path spellings
+        run: |
+          . lib/cache-common.sh
+          GC=/tmp/gc-cache-norm
+          mkdir -p /tmp/gc-n-src /tmp/gc-n-dir
+          echo n > /tmp/gc-n-src/data.txt
+          sh lib/cache-save.sh /tmp/gc-n-src norm-key "$GC"
+          sh lib/cache-restore.sh /tmp/gc-n-dir/t norm-key "$GC" ""
+          sh lib/cache-restore.sh /tmp/gc-n-dir/t/ norm-key "$GC" ""
+          sh lib/cache-restore.sh /tmp/gc-n-dir//t norm-key "$GC" ""
+          recdir="$GC/targets/$(encode_key norm-key)"
+          n=$(find "$recdir" -type f | wc -l | tr -d ' ')
+          [ "$n" = 1 ] \
+            || (echo "3 spellings of one target should collapse to 1 record, got $n" && exit 1)
+          [ "$(cat "$recdir"/*)" = /tmp/gc-n-dir/t ] \
+            || (echo "record not normalized: $(cat "$recdir"/*)" && exit 1)
+          entry="$GC/entries/$(encode_key norm-key)"
+          touch -t 202001010000 "$entry/.local-cache-key"
+          find /tmp/gc-n-dir/t -exec touch -t 202001010000 {} +
+          sh lib/cache-gc.sh --apply --max-age-days 1 "$GC"
+          [ ! -e /tmp/gc-n-dir/t ] || (echo "normalized target not reclaimed" && exit 1)
+          echo "GC path normalization (one lock/record per physical target): OK"
+
+      # The orphan-record sweep removes records whose entry is gone (e.g. a manual
+      # entries/ reset) but must NEVER delete the live on-disk dir a record names —
+      # with the entry gone there is no coldness signal to justify it.
+      - name: GC removes orphaned records but never the live dirs they name
+        run: |
+          . lib/cache-common.sh
+          GC=/tmp/gc-cache-orphan
+          mkdir -p "$GC/entries" "$GC/targets/$(encode_key gone-key)" /tmp/gc-orphan-live
+          echo x > /tmp/gc-orphan-live/keep.txt
+          printf '%s' /tmp/gc-orphan-live > "$GC/targets/$(encode_key gone-key)/rec"
+          sh lib/cache-gc.sh --apply --max-age-days 1 "$GC"
+          [ ! -d "$GC/targets/$(encode_key gone-key)" ] \
+            || (echo "stale orphan record dir not removed" && exit 1)
+          [ -d /tmp/gc-orphan-live ] \
+            || (echo "gc deleted a live dir named by an orphan record" && exit 1)
+          echo "GC orphan-record cleanup (record gone, live dir spared): OK"
+
+      # Entries written before the metadata file have no last-use signal and no
+      # raw key; gc must leave them alone.
+      - name: GC skips legacy entries with no metadata
+        run: |
+          GC=/tmp/gc-cache-legacy
+          mkdir -p "$GC/entries/k-legacy"
+          echo old > "$GC/entries/k-legacy/data.txt"
+          touch -t 202001010000 "$GC/entries/k-legacy" "$GC/entries/k-legacy/data.txt"
+          sh lib/cache-gc.sh --apply --max-age-days 1 "$GC"
+          [ -d "$GC/entries/k-legacy" ] \
+            || (echo "gc evicted a legacy entry with no metadata" && exit 1)
+          echo "GC legacy-entry skip: OK"
+
+      # A store with no entries dir is a clean no-op (not an error) — with the
+      # lock CLI present, so this reaches that branch rather than the CLI guard.
+      - name: GC on a store with no entries dir exits cleanly
+        run: |
+          GC=/tmp/gc-cache-noent
+          rm -rf "$GC"
+          mkdir -p "$GC"
+          sh lib/cache-gc.sh --apply --max-age-days 1 "$GC"
+          echo "GC no-entries-dir clean exit: OK"
+
+      # A valid target path containing spaces exercises the env-passing lock/record
+      # design end-to-end (the lock name and record must survive word-splitting).
+      - name: GC handles a target path containing spaces end-to-end
+        run: |
+          . lib/cache-common.sh
+          GC=/tmp/gc-cache-space
+          mkdir -p /tmp/gc-sp-src "/tmp/gc sp dir"
+          echo s > /tmp/gc-sp-src/data.txt
+          sh lib/cache-save.sh /tmp/gc-sp-src sp-key "$GC"
+          sh lib/cache-restore.sh "/tmp/gc sp dir/t" sp-key "$GC" ""
+          [ -f "/tmp/gc sp dir/t/data.txt" ] || (echo "restore to a spaced path failed" && exit 1)
+          entry="$GC/entries/$(encode_key sp-key)"
+          touch -t 202001010000 "$entry/.local-cache-key"
+          find "/tmp/gc sp dir/t" -exec touch -t 202001010000 {} +
+          sh lib/cache-gc.sh --apply --max-age-days 1 "$GC"
+          [ ! -e "/tmp/gc sp dir/t" ] || (echo "gc did not reclaim a spaced target path" && exit 1)
+          echo "GC spaced target path: OK"
+
+      # End-to-end through the real gc action + downloaded local-mutex, proving
+      # the store-wide lock hands cache-gc.sh a working LOCAL_MUTEX_CLI and the
+      # nested per-key/per-target locks reclaim as the direct-script tests expect.
+      - name: Populate the gc-action fixture source
+        run: |
+          mkdir -p /tmp/gc-act-src
+          echo act > /tmp/gc-act-src/data.txt
+      - name: Save a fixture to reclaim via the gc action
+        uses: ./save
+        with:
+          path: /tmp/gc-act-src
+          key: gc-act-key
+          cache-dir: /tmp/gc-act-cache
+      - name: Restore it so a target is recorded
+        uses: ./
+        with:
+          path: /tmp/gc-act-tgt
+          key: gc-act-key
+          cache-dir: /tmp/gc-act-cache
+      - name: Age the gc-action entry and target
+        run: |
+          . lib/cache-common.sh
+          entry="/tmp/gc-act-cache/entries/$(encode_key gc-act-key)"
+          touch -t 202001010000 "$entry/.local-cache-key"
+          find /tmp/gc-act-tgt -exec touch -t 202001010000 {} +
+      - name: Garbage-collect via the gc action
+        uses: ./gc
+        with:
+          cache-dir: /tmp/gc-act-cache
+          max-age-days: 1
+          apply: true
+      - name: Verify the gc action reclaimed the cold entry and target
+        run: |
+          . lib/cache-common.sh
+          entry="/tmp/gc-act-cache/entries/$(encode_key gc-act-key)"
+          [ ! -d "$entry" ] || (echo "gc action did not evict the cold entry" && exit 1)
+          [ ! -e /tmp/gc-act-tgt ] || (echo "gc action did not reclaim the cold target" && exit 1)
+          echo "GC action end-to-end (real local-mutex wiring): OK"
+
+  # Concurrency stress. The deterministic tests above pin the lock NAMES; this
+  # job exercises the real thing — many prefix-restores racing gc on a shared
+  # cache-dir through the actual two-phase lock flow — and asserts the one
+  # invariant that holds under every interleaving: a restore target is either
+  # absent (a clean miss) or byte-identical to its source, never a partial copy.
+  # The eviction race window is narrow, so per-machine detection is
+  # probabilistic; the matrix fans the same run across many machines to raise the
+  # aggregate odds and diversify timing (dash vs bash-3.2, different schedulers).
+  # It never false-fails on correct code (the invariant is timing-independent),
+  # and a deadlock is caught by the job timeout rather than hanging CI. Scale by
+  # editing the replica list; macOS is capped to stay under the hosted-runner
+  # concurrency limit.
+  stress:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        replica: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        include:
+          - os: macos-latest
+            replica: 1
+          - os: macos-latest
+            replica: 2
+          - os: macos-latest
+            replica: 3
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      LOCAL_MUTEX_CLI: ${{ github.workspace }}/.local-mutex/lib/local-mutex.sh
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - name: Check out local-mutex (pinned)
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: curlewlabs-com/local-mutex
+          ref: v2.1.0
+          path: .local-mutex
+      - name: Stress — prefix-restores racing gc on a shared cache-dir
+        env:
+          ROUNDS: 30
+          NENTRIES: 5
+        run: |
+          set -eu
+          WS="$PWD"
+          . "$WS/lib/cache-common.sh"
+          WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+          CD="$WORK/cache"; mkdir -p "$CD/entries"
+
+          # ~250 KB payload across several files so each rsync takes measurable
+          # time, widening the eviction race window.
+          PL="$WORK/payload"; mkdir -p "$PL/sub"
+          i=0
+          while [ "$i" -lt 30 ]; do
+            yes "content-line-$i-payload" 2>/dev/null | head -n 200 > "$PL/f$i.txt"
+            i=$((i + 1))
+          done
+          printf 'nested\n' > "$PL/sub/n.txt"
+
+          # Phase 2 inner: target-lock nesting the restore of the pre-resolved
+          # entry. Args arrive by env (like action.yml), never interpolated.
+          cat > "$WORK/phase2.sh" <<'EOF'
+          #!/bin/sh
+          set -eu
+          sh "$CLI" "cache-target-$NP" 'sh "$RSH" --restore "$MN" "$RP" "$RK" "$CDIR"'
+          EOF
+
+          # One restore through the real two-phase flow: Phase 1 target-locked
+          # check + resolution, Phase 2 matched-key-lock nesting target-lock.
+          restore_flow() {
+            rf_path="$1"; rf_key="$2"; rf_rk="$3"
+            rf_np=$(normalize_path "$rf_path")
+            rf_p1="$WORK/p1.$$.$(basename "$rf_path")"
+            GITHUB_OUTPUT="$rf_p1" sh "$LOCAL_MUTEX_CLI" "cache-target-$rf_np" \
+              "sh '$WS/lib/cache-restore.sh' --check '$rf_path' '$rf_key' '$CD' '$rf_rk'" >/dev/null 2>&1 || true
+            rf_skip=$(grep '^skip-lock=' "$rf_p1" 2>/dev/null | cut -d= -f2- || true)
+            rf_mk=$(grep '^matched-key=' "$rf_p1" 2>/dev/null | cut -d= -f2- || true)
+            rf_mn=$(grep '^matched-name=' "$rf_p1" 2>/dev/null | cut -d= -f2- || true)
+            rm -f "$rf_p1"
+            if [ "$rf_skip" = "true" ]; then return 0; fi
+            if [ -z "$rf_mk" ]; then return 0; fi
+            MN="$rf_mn" RP="$rf_path" RK="$rf_key" CDIR="$CD" NP="$rf_np" \
+              CLI="$LOCAL_MUTEX_CLI" RSH="$WS/lib/cache-restore.sh" \
+              sh "$LOCAL_MUTEX_CLI" "cache-save-$rf_mk" "sh '$WORK/phase2.sh'" >/dev/null 2>&1 || true
+          }
+
+          corrupt=0; hits=0; misses=0; round=0
+          while [ "$round" -lt "$ROUNDS" ]; do
+            round=$((round + 1))
+            # Ensure each entry exists and is backdated cold, so gc will evict it.
+            j=1
+            while [ "$j" -le "$NENTRIES" ]; do
+              ee="$CD/entries/$(encode_key "stress-${j}-v1")"
+              if [ ! -d "$ee" ]; then
+                sh "$WS/lib/cache-save.sh" "$PL" "stress-${j}-v1" "$CD" >/dev/null 2>&1 || true
+              fi
+              if [ -f "$ee/$ENTRY_KEY_NAME" ]; then
+                touch -t 202001010000 "$ee/$ENTRY_KEY_NAME" || true
+              fi
+              j=$((j + 1))
+            done
+
+            # Fire all prefix-restores (each to its own fresh target) + gc.
+            j=1
+            while [ "$j" -le "$NENTRIES" ]; do
+              restore_flow "$WORK/tgt-${round}-${j}" "stress-${j}-req" "stress-${j}-" &
+              j=$((j + 1))
+            done
+            sh "$LOCAL_MUTEX_CLI" "cache-gc" "sh '$WS/lib/cache-gc.sh' --apply --max-age-days 1 '$CD'" >/dev/null 2>&1 &
+            wait
+
+            # Invariant: each fresh target is absent (clean miss) or identical.
+            j=1
+            while [ "$j" -le "$NENTRIES" ]; do
+              tgt="$WORK/tgt-${round}-${j}"
+              if [ -e "$tgt" ]; then
+                if diff -r -x "$MARKER_NAME" -x "$ENTRY_KEY_NAME" "$PL" "$tgt" >/dev/null 2>&1; then
+                  hits=$((hits + 1))
+                else
+                  corrupt=$((corrupt + 1))
+                  echo "CORRUPT: round $round target $tgt differs from source payload"
+                fi
+              else
+                misses=$((misses + 1))
+              fi
+              j=$((j + 1))
+            done
+          done
+
+          echo "stress: rounds=$ROUNDS restorers/round=$NENTRIES hits=$hits misses=$misses corrupt=$corrupt"
+          if [ "$corrupt" -ne 0 ]; then
+            echo "FAIL: $corrupt corrupt restore(s) — gc raced a live restore"
+            exit 1
+          fi
+          if [ $((hits + misses)) -eq 0 ]; then
+            echo "FAIL: no restores ran"
+            exit 1
+          fi
+          echo "Concurrency stress: no partial/corrupt restore across $ROUNDS rounds: OK"
