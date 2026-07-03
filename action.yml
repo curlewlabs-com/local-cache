@@ -91,43 +91,48 @@ runs:
       shell: sh
       run: cat "${{ steps.check-lock.outputs.output-file }}" >> "$GITHUB_OUTPUT"
 
-    # Phase 2: Serialized restore / coordination.
-    # If Phase 1 missed or found a stale target, take the per-KEY lock (protects
-    # the entry as the rsync SOURCE against gc eviction) and, nested inside it,
-    # the per-TARGET lock (protects the target as the rsync DEST against gc
-    # reclaim). The nest order is key ⊃ target — the same order gc acquires
-    # them — so a restore and a sweep can never deadlock. The inner lock is
-    # taken via local-mutex's own CLI ($LOCAL_MUTEX_CLI), inheriting its lock
-    # domain ($LOCAL_MUTEX_LOCK_DIR), so it lands in the same domain as Phase 1
-    # and gc. The item is passed to the inner command via the environment
-    # (INPUT_*/GH_ACTION_PATH already exported here and inherited), never
-    # string-interpolated into the command.
+    # Phase 2: Serialized restore. Runs when Phase 1 found a match it could not
+    # serve from an already-current target (skipped on a miss, when matched-key
+    # is empty). Takes the per-KEY lock on the MATCHED entry's own key — not the
+    # requested key — so it is the very lock gc takes to evict that entry: on a
+    # restore-keys (prefix) hit the served entry's stored key differs from the
+    # requested key, and locking the requested key would leave the rsync SOURCE
+    # unprotected against a concurrent eviction. Nested inside it is the
+    # per-TARGET lock (protects the target as the rsync DEST against gc reclaim).
+    # The nest order is key ⊃ target — the same order gc acquires them — so a
+    # restore and a sweep can never deadlock. cache-restore.sh restores the exact
+    # entry Phase 1 resolved (--restore <matched-name>), never re-resolving to a
+    # different, unlocked one. The inner lock is taken via local-mutex's own CLI
+    # ($LOCAL_MUTEX_CLI), inheriting its lock domain ($LOCAL_MUTEX_LOCK_DIR), so
+    # it lands in the same domain as Phase 1 and gc. Items pass to the inner
+    # command via the environment (INPUT_*/MATCHED_NAME/GH_ACTION_PATH already
+    # exported here and inherited), never string-interpolated into the command.
     #
     # local-mutex is pinned to an immutable patch tag (not the floating major
     # `@v2`) so a local-cache@v3 consumer sees deterministic behavior across
     # reruns. See AGENTS.md for the rationale.
     - name: Restore (locked)
-      if: steps.check.outputs.skip-lock != 'true'
+      if: steps.check.outputs.skip-lock != 'true' && steps.check.outputs.matched-key != ''
       id: restore-lock
       uses: curlewlabs-com/local-mutex@v2.1.0
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_KEY: ${{ inputs.key }}
         INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
-        INPUT_RESTORE_KEYS: ${{ inputs.restore-keys }}
+        MATCHED_NAME: ${{ steps.check.outputs.matched-name }}
         GH_ACTION_PATH: ${{ github.action_path }}
         NORM_PATH: ${{ steps.norm.outputs.path }}
       with:
-        name: cache-save-${{ inputs.key }}
+        name: cache-save-${{ steps.check.outputs.matched-key }}
         run: |
           sh "$LOCAL_MUTEX_CLI" "cache-target-$NORM_PATH" \
-            'sh "$GH_ACTION_PATH/lib/cache-restore.sh" "$INPUT_PATH" "$INPUT_KEY" "$INPUT_CACHE_DIR" "$INPUT_RESTORE_KEYS"'
+            'sh "$GH_ACTION_PATH/lib/cache-restore.sh" --restore "$MATCHED_NAME" "$INPUT_PATH" "$INPUT_KEY" "$INPUT_CACHE_DIR"'
 
     # Propagate cache-restore.sh outputs across the composite action
     # boundary. local-mutex captures them in output-file; we read them
     # into this step's GITHUB_OUTPUT so the action-level outputs resolve.
     - name: Propagate restore outputs
-      if: steps.check.outputs.skip-lock != 'true'
+      if: steps.check.outputs.skip-lock != 'true' && steps.check.outputs.matched-key != ''
       id: restore
       shell: sh
       run: cat "${{ steps.restore-lock.outputs.output-file }}" >> "$GITHUB_OUTPUT"

@@ -35,11 +35,24 @@ script_dir=$(
 . "${script_dir}/cache-common.sh"
 
 check_only="false"
+# Phase 2 restores the exact entry Phase 1 already resolved (--restore <name>),
+# so the per-key lock it holds names that entry's own key — the same lock gc
+# takes to evict it. Empty in Phase 1 and for direct callers, which resolve
+# inline.
+restore_entry=""
 # ${1:-}, not $1: under `set -u` a bare positional on a missing arg aborts with
 # "unbound variable" before the empty-string checks below can emit the
 # caller-facing error. The guards keep those checks the single failure path.
 if [ "${1:-}" = "--check" ]; then
     check_only="true"
+    shift
+elif [ "${1:-}" = "--restore" ]; then
+    shift
+    restore_entry="${1:-}"
+    if [ -z "$restore_entry" ]; then
+        printf '::error::cache-restore: --restore requires an entry name\n' >&2
+        exit 1
+    fi
     shift
 fi
 
@@ -192,6 +205,21 @@ record_target() {
         || printf '::debug::record_target: could not write %s (read-only store?)\n' "$rt_file"
 }
 
+# Emit the miss outputs. Used both on a genuine miss and when the entry Phase 1
+# resolved was evicted before Phase 2 could lock it — a clean miss beats copying
+# a half-deleted source. Leaves the target untouched, matching a cold-start miss.
+emit_miss() {
+    em_elapsed=$(( $(date +%s) - start_time ))
+    printf '::notice::Cache miss: %s\n' "$cache_key"
+    printf '::debug::No match found for key or any restore-keys prefix\n'
+    append_summary "- **local-cache** \`${cache_key}\` → ❌ Miss (${em_elapsed}s)"
+    printf 'cache-hit=false\n' >> "$GITHUB_OUTPUT"
+    printf 'cache-matched-key=\n' >> "$GITHUB_OUTPUT"
+    if [ -n "${GITHUB_ENV:-}" ]; then
+        printf 'LOCAL_CACHE_HIT=false\nLOCAL_CACHE_MATCHED_KEY=\n' >> "$GITHUB_ENV"
+    fi
+}
+
 do_restore() {
     entry_path="$1"
     matched_key="$2"
@@ -276,24 +304,48 @@ if [ "${RUNNER_DEBUG:-}" = "1" ]; then
     printf '::debug::Checking local cache — key: %s, entries-dir: %s\n' "$cache_key" "$entries_dir"
 fi
 
+# Phase 2: restore the exact entry Phase 1 resolved and is locked on. Re-running
+# the resolution here could land on a DIFFERENT entry (a prefix hit's newest
+# match can change between the phases), which the held cache-save-<matched-key>
+# lock would not cover — reopening the eviction race the lock exists to close. An
+# exact/legacy name carries the requested key; any other name is a prefix hit
+# carrying the entry's own stored key. If the entry was evicted in the Phase 1→2
+# window it is simply gone, so miss cleanly.
+if [ -n "$restore_entry" ]; then
+    entry_path="${entries_dir}/${restore_entry}"
+    if [ ! -d "$entry_path" ]; then
+        emit_miss
+        exit 0
+    fi
+    if [ "$restore_entry" = "$encoded_key" ] || [ "$restore_entry" = "$legacy_safe_key" ]; then
+        do_restore "$entry_path" "$cache_key" "true"
+    else
+        do_restore "$entry_path" "$(read_entry_key "$entry_path")" "false"
+    fi
+    exit 0
+fi
+
+# Resolve the matching entry once: exact, then legacy-safe name, then the newest
+# restore-keys prefix match. matched_key is the key the marker and gc lock on —
+# the requested key for an exact/legacy hit, the entry's own stored key for a
+# prefix hit (gc skips legacy entries, which have no stored key).
+matched_name=""
+matched_exact="false"
+matched_key=""
 if [ -d "${entries_dir}/${encoded_key}" ]; then
-    do_restore "${entries_dir}/${encoded_key}" "$cache_key" "true"
-    # If do_restore returned success in check_only mode (meaning skip-lock=true), we exit.
-    exit 0
-fi
-
-if [ -d "${entries_dir}/${legacy_safe_key}" ]; then
-    do_restore "${entries_dir}/${legacy_safe_key}" "$cache_key" "true"
-    exit 0
-fi
-
-if [ -n "$restore_keys" ]; then
-    found_match=""
+    matched_name="$encoded_key"
+    matched_exact="true"
+    matched_key="$cache_key"
+elif [ -d "${entries_dir}/${legacy_safe_key}" ]; then
+    matched_name="$legacy_safe_key"
+    matched_exact="true"
+    matched_key="$cache_key"
+elif [ -n "$restore_keys" ]; then
     tmpfile=$(mktemp)
     printf '%s\n' "$restore_keys" > "$tmpfile"
     while IFS= read -r prefix; do
         [ -z "$prefix" ] && continue
-        [ -n "$found_match" ] && break
+        [ -n "$matched_name" ] && break
         # SHA-256 directory names are not prefix-preserving, so we scan
         # all entries and compare stored raw keys.  ls -dt sorts newest
         # first.  Entry names are k-<hex> or legacy [a-zA-Z0-9._-]+ —
@@ -306,32 +358,31 @@ if [ -n "$restore_keys" ]; then
             entry_key=$(read_entry_key "${entries_dir}/${entry_name}")
             case "$entry_key" in
                 "${prefix}"*)
-                    found_match="$entry_name"
+                    matched_name="$entry_name"
+                    matched_key="$entry_key"
                     break
                     ;;
             esac
         done
     done < "$tmpfile"
     rm -f "$tmpfile"
-
-    if [ -n "$found_match" ]; then
-        do_restore "${entries_dir}/${found_match}" "$(read_entry_key "${entries_dir}/${found_match}")" "false"
-        exit 0
-    fi
 fi
 
-# Miss path (only reached if check_only failed or no match found)
-if [ "$check_only" = "true" ]; then
+if [ -z "$matched_name" ]; then
+    # Genuine miss. In --check mode this ends Phase 1: Phase 2 is skipped when
+    # matched-key is empty, so the miss is surfaced here rather than there.
+    emit_miss
     exit 0
 fi
 
-elapsed=$(( $(date +%s) - start_time ))
-printf '::notice::Cache miss: %s\n' "$cache_key"
-printf '::debug::No match found for key or any restore-keys prefix\n'
-append_summary "- **local-cache** \`${cache_key}\` → ❌ Miss (${elapsed}s)"
-printf 'cache-hit=false\n' >> "$GITHUB_OUTPUT"
-printf 'cache-matched-key=\n' >> "$GITHUB_OUTPUT"
-
-if [ -n "${GITHUB_ENV:-}" ]; then
-    printf 'LOCAL_CACHE_HIT=false\nLOCAL_CACHE_MATCHED_KEY=\n' >> "$GITHUB_ENV"
+if [ "$check_only" = "true" ]; then
+    # Hand the resolved entry to Phase 2 so its per-key lock names this entry's
+    # own key — the same lock gc takes to evict it.
+    printf 'matched-name=%s\n' "$matched_name" >> "$GITHUB_OUTPUT"
+    printf 'matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
 fi
+
+# In --check mode do_restore emits skip-lock + hit outputs only if the target is
+# already current; otherwise it returns and Phase 2 does the copy under the lock.
+do_restore "${entries_dir}/${matched_name}" "$matched_key" "$matched_exact"
+exit 0
