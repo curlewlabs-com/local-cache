@@ -16,8 +16,11 @@ inputs:
   max-age-days:
     description: >-
       Evict entries not restored in this many days, and their recorded restore
-      targets. Keep this comfortably above your longest job — target deletion
-      is gated on a time threshold, not a lock.
+      targets. A retention policy: size it to your disk budget and how fast your
+      keys roll (days to weeks; default 30). It must stay comfortably above your
+      longest job — the correctness floor, since target deletion is gated on this
+      time threshold, not a lock — but that floor is far below a sensible
+      retention window.
     required: false
     default: '30'
   apply:
