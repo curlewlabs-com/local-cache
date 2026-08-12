@@ -51,7 +51,7 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           repository: curlewlabs-com/local-mutex
-          ref: v2.1.0
+          ref: 88393519d9c8488eeea41bbbb810e33a1ac6609a # v2.1.0
           path: .local-mutex
 
       - name: Restore against non-existent cache dir (cold start)
@@ -1322,7 +1322,7 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           repository: curlewlabs-com/local-mutex
-          ref: v2.1.0
+          ref: 88393519d9c8488eeea41bbbb810e33a1ac6609a # v2.1.0
           path: .local-mutex
       - name: Stress — prefix-restores racing gc on a shared cache-dir
         env:
