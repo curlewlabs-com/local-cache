@@ -45,7 +45,7 @@ runs:
     # local-cache@v3 consumer sees deterministic behavior across reruns. See
     # AGENTS.md for the rationale.
     - name: Garbage-collect
-      uses: curlewlabs-com/local-mutex@v2.1.0
+      uses: curlewlabs-com/local-mutex@88393519d9c8488eeea41bbbb810e33a1ac6609a # v2.1.0
       env:
         INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
         INPUT_MAX_AGE_DAYS: ${{ inputs.max-age-days }}

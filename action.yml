@@ -69,7 +69,7 @@ runs:
     # check's GITHUB_OUTPUT writes in output-file; the next step surfaces them.
     - name: Quick check (target-locked)
       id: check-lock
-      uses: curlewlabs-com/local-mutex@v2.1.0
+      uses: curlewlabs-com/local-mutex@88393519d9c8488eeea41bbbb810e33a1ac6609a # v2.1.0
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_KEY: ${{ inputs.key }}
@@ -114,7 +114,7 @@ runs:
     - name: Restore (locked)
       if: steps.check.outputs.skip-lock != 'true' && steps.check.outputs.matched-key != ''
       id: restore-lock
-      uses: curlewlabs-com/local-mutex@v2.1.0
+      uses: curlewlabs-com/local-mutex@88393519d9c8488eeea41bbbb810e33a1ac6609a # v2.1.0
       env:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_KEY: ${{ inputs.key }}
