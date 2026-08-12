@@ -13,6 +13,11 @@ cache miss downloads and stores the content locally; every subsequent runner
 restores from disk in seconds. No network round-trip, no cloud storage, no
 per-runner duplication.
 
+**Supported platforms:** self-hosted runners on Linux or macOS. A Linux runner
+inside **WSL2** counts as Linux and is the supported way to use `local-cache`
+on a Windows host. Windows runners themselves are not supported — see
+[Requirements](#requirements).
+
 ## Why
 
 `actions/cache` stores entries on GitHub's servers. Every restore is a download
@@ -32,6 +37,36 @@ serializes concurrent writers per-key via
 so two runners cannot corrupt the same entry; the second writer hits a
 post-acquire re-check, sees the entry already exists, and exits cleanly. After
 that initial population, no runner ever downloads again.
+
+## Requirements
+
+- **A self-hosted runner on Linux or macOS.** A Linux runner inside **WSL2**
+  counts as Linux and is fully supported — it is how to run `local-cache` on
+  a Windows host, and it gets a real POSIX filesystem, `rsync`, and `flock`.
+  BSDs that ship `lockf(1)` should work too, but CI covers Linux and macOS
+  only.
+- **`rsync` on `PATH`.** It is the copy engine for every restore and save.
+  Preinstalled on macOS; packaged as `rsync` on every Linux distribution.
+- **A SHA-256 command on `PATH`:** `sha256sum` (Linux `coreutils`) or `shasum`
+  (macOS, Perl core). Everything else the scripts call — `sh`, `find`, `du`,
+  `stat`, `mktemp`, `ls`, `mv`, `rm` and the rest — is base POSIX userland,
+  present by default on both platforms.
+- **Everything `local-mutex` requires**, since every locked step runs through
+  [`curlewlabs-com/local-mutex`](https://github.com/curlewlabs-com/local-mutex):
+  `lockf(1)` or `flock(1)` on `PATH`, and a lock directory shared by all the
+  runners you want to serialize — `/tmp` by default, automatic on a single
+  machine but not on topologies that give each runner a private `/tmp`.
+- **A persistent `cache-dir`** on local disk, shared across the runners on the
+  machine and outside any per-workspace `_work` directory.
+
+**Windows runners are not supported**, and two things block it independently.
+The composite steps declare `shell: sh`, which GitHub Actions offers on Linux
+and macOS only. And `rsync` — the copy engine for every restore and save —
+ships with neither Windows nor Git for Windows; it has to be hand-installed
+from the MSYS2 repository. Supporting Windows properly would take a native lock
+primitive in `local-mutex` (`LockFileEx`) and a second copy engine here
+(`robocopy`), plus care around path spellings, atomic directory renames, and
+virus scanners holding file handles open. Run the runner inside WSL2 instead.
 
 ## How it works
 
