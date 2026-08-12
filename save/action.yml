@@ -34,7 +34,7 @@ runs:
     # machine reboot — which is why local-mutex needs no PID tracking or
     # stale-lock recovery code.
     #
-    # Pinned to the immutable patch tag (not the floating major `@v2`)
+    # Pinned to a commit SHA (not a version tag, which stays movable)
     # so a local-cache@v3 consumer sees deterministic behavior across
     # reruns. See AGENTS.md for the rationale.
     - name: Save cache
