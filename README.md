@@ -228,12 +228,26 @@ Because the last-used mtime is bumped by *any* runner that shares the store, a c
 
 ## Releasing
 
-Every release ships **both** an immutable patch tag (`vMAJOR.MINOR.PATCH`, e.g. `v3.0.1`) and a floating major tag (`vMAJOR`, e.g. `v3`). Users who want exact reproducibility pin to `@v3.0.1`; users who want automatic minor/patch updates inside the v3 series pin to `@v3`. Both tag kinds exist for every release. See [AGENTS.md](AGENTS.md) for the full contract.
+Every release ships **both** a fixed patch tag (`vMAJOR.MINOR.PATCH`,
+e.g. `v3.0.1`) and a floating major tag (`vMAJOR`, e.g. `v3`). Pin to
+`@v3.0.1` for a stable reference; pin to `@v3` for automatic
+minor/patch updates inside the v3 series. Both tag kinds exist for
+every release.
+
+We never force-move a patch tag once it is pushed. That is a promise we
+keep rather than something the platform enforces, so if you need a
+guarantee instead of a promise, pin the commit SHA:
+
+```yaml
+- uses: curlewlabs-com/local-cache@<40-hex-sha> # v3.0.1
+```
+
+See [AGENTS.md](AGENTS.md) for the full contract.
 
 After merging to `main`:
 
 ```sh
-# Immutable patch tag — never force-moved once pushed.
+# Fixed patch tag — we never force-move it once pushed.
 git tag v3.x.y HEAD
 git push origin v3.x.y
 

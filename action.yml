@@ -108,8 +108,8 @@ runs:
     # command via the environment (INPUT_*/MATCHED_NAME/GH_ACTION_PATH already
     # exported here and inherited), never string-interpolated into the command.
     #
-    # local-mutex is pinned to an immutable patch tag (not the floating major
-    # `@v2`) so a local-cache@v3 consumer sees deterministic behavior across
+    # local-mutex is pinned to a commit SHA (not a version tag, which stays
+    # movable) so a local-cache@v3 consumer sees deterministic behavior across
     # reruns. See AGENTS.md for the rationale.
     - name: Restore (locked)
       if: steps.check.outputs.skip-lock != 'true' && steps.check.outputs.matched-key != ''

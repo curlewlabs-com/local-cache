@@ -41,7 +41,7 @@ runs:
     # cold entry only under that entry's key lock and reclaims a target only
     # under that target's lock — a sweep never races a concurrent restore/save.
     #
-    # Pinned to the immutable patch tag (not the floating major @v2) so a
+    # Pinned to a commit SHA (not a version tag, which stays movable) so a
     # local-cache@v3 consumer sees deterministic behavior across reruns. See
     # AGENTS.md for the rationale.
     - name: Garbage-collect
