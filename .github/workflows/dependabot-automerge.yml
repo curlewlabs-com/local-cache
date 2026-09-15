@@ -2,7 +2,7 @@ name: Dependabot auto-merge
 
 # Let green Dependabot PRs merge themselves. This enables GitHub's native
 # auto-merge, which holds the PR until the branch's required status checks pass
-# and then merges it — no human in the loop. Supply-chain soak comes from the
+# and then merges it - no human in the loop. Supply-chain soak comes from the
 # cooldown in dependabot.yml (version updates); security updates bypass that
 # cooldown by design and merge as soon as CI is green.
 on: pull_request

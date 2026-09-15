@@ -30,8 +30,8 @@ runs:
     # so that two runners writing the same entry never collide. The mutex
     # is per-key (the lock name includes the cache key), so saves of
     # different keys still run in parallel. The kernel releases the lock
-    # automatically on process death — including SIGKILL, OOM kill, and
-    # machine reboot — which is why local-mutex needs no PID tracking or
+    # automatically on process death - including SIGKILL, OOM kill, and
+    # machine reboot - which is why local-mutex needs no PID tracking or
     # stale-lock recovery code.
     #
     # Pinned to a commit SHA (not a version tag, which stays movable)
@@ -49,7 +49,7 @@ runs:
         # keys do not block each other. local-mutex v2.0.1+ hashes its
         # name input with SHA-256 to form the lockfile basename, so
         # distinct keys always map to distinct locks regardless of length
-        # or byte content — no sanitization or truncation that could
+        # or byte content - no sanitization or truncation that could
         # collapse two different keys to the same lockfile.
         name: cache-save-${{ inputs.key }}
         run: |

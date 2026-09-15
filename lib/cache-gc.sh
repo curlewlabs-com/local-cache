@@ -10,14 +10,14 @@
 #                     (including the constant-time marker-skip), so it tracks
 #                     genuine recency of use across every runner sharing the
 #                     store. Default: 30.
-#   --apply           Actually delete. Default: dry run — report what would be
+#   --apply           Actually delete. Default: dry run - report what would be
 #                     reclaimed without touching anything.
 #
 # Locking. This script must run under local-mutex, which exports LOCAL_MUTEX_CLI
 # (its own path) into the environment; gc/action.yml provides that by wrapping
 # the whole sweep in the store-wide `cache-gc` lock. The sweep re-invokes itself
-# through that CLI to take two finer locks — the SAME ones the save and restore
-# paths hold — so it never races them:
+# through that CLI to take two finer locks - the SAME ones the save and restore
+# paths hold - so it never races them:
 #
 #   * cache-save-<raw-key>   Held while an entry is re-checked and evicted: the
 #                            per-key lock save and restore-phase-2 also take. A
@@ -28,7 +28,7 @@
 #                            marker check, owner-coldness re-check, and rm are
 #                            atomic against a concurrent restore to that path.
 #
-# Whenever both are held they are acquired key ⊃ target, and no actor holds the
+# Whenever both are held they are acquired key -> target, and no actor holds the
 # target lock while waiting on a key lock (restore Phase 1 takes only the target
 # lock), so a sweep and a restore can never deadlock. Whole entries and whole targets
 # only, never individual files, because a partial delete would corrupt the
@@ -36,7 +36,7 @@
 #
 # Safety is layered. The locks make eviction atomic against concurrent saves
 # and restores. But a job USES a restored target for minutes after its restore
-# step (and its lock) has finished — a window no lock spans — so the
+# step (and its lock) has finished - a window no lock spans - so the
 # max-age-days threshold covers it: a cold entry proves no runner has restored
 # it (the last-use mtime is a global signal, bumped by any runner) within the
 # window, so with a window wider than the longest job every target copy is idle.
@@ -44,7 +44,7 @@
 # cold (a concurrent skip-hit bumped it under the target lock, which the reclaim
 # observes) or if anything under it was modified within the window (an
 # in-progress build writes into its restored tree). A consumer whose jobs
-# approach the window must widen it — this is a time heuristic, not a lock.
+# approach the window must widen it - this is a time heuristic, not a lock.
 set -eu
 
 script_dir=$(
@@ -59,7 +59,7 @@ dir_size_h() { du -sh "$1" 2>/dev/null | cut -f1 || printf '?'; }
 
 # True if the entry metadata's last-use mtime is at or before the sweep cutoff.
 # Read fresh on every call, so a caller holding a lock observes a concurrent
-# mark_used bump. Unreadable mtime reads as "now" (hot) — fail safe.
+# mark_used bump. Unreadable mtime reads as "now" (hot) - fail safe.
 is_cold() {
     ic_use=$(stat_mtime "$1" 2>/dev/null || echo "$GC_NOW")
     [ "$ic_use" -le "$GC_CUTOFF" ]
@@ -99,7 +99,7 @@ do_reclaim_target() {
 
     # Owner still cold, re-read under this target lock. A skip-hit restore bumps
     # the owner's last-use (mark_used) while holding THIS lock, so this read
-    # observes it: a hot owner means a job is using the target right now — and
+    # observes it: a hot owner means a job is using the target right now - and
     # the skip path leaves the tree untouched, so the mtime backstop below can't
     # see it. This check is the primary guard for that case.
     if ! is_cold "$GC_OWNER_META"; then
@@ -138,9 +138,9 @@ do_evict_entry() {
 
     # Re-check under the key lock: a save or full restore of this key (both hold
     # this lock) since the scan bumps last-use. Leave the whole entry and its
-    # targets if it went hot — a job may be restoring from it right now.
+    # targets if it went hot - a job may be restoring from it right now.
     if ! is_cold "$meta"; then
-        printf '::debug::cache-gc: %s no longer cold since scan — keeping\n' "$name"
+        printf '::debug::cache-gc: %s no longer cold since scan - keeping\n' "$name"
         return 0
     fi
 
@@ -157,9 +157,9 @@ do_evict_entry() {
             tpath=$(cat "$rec" 2>/dev/null || true)
             [ -n "$tpath" ] || continue
             GC_TARGET_PATH="$tpath"
-            # Nested key ⊃ target. reclaim-target exits 0 when the entry may be
+            # Nested key -> target. reclaim-target exits 0 when the entry may be
             # evicted as far as this target is concerned, 3 when the target is a
-            # live copy of this entry. Any other code is a failure — keep the
+            # live copy of this entry. Any other code is a failure - keep the
             # entry to be safe and surface it; one target must never abort the
             # whole sweep.
             set +e
@@ -172,7 +172,7 @@ do_evict_entry() {
                 3) any_live=true ;;
                 *)
                     any_live=true
-                    printf '::warning::cache-gc: reclaim of %s failed (rc=%s) — entry kept\n' "$tpath" "$rc" >&2
+                    printf '::warning::cache-gc: reclaim of %s failed (rc=%s) - entry kept\n' "$tpath" "$rc" >&2
                     ;;
             esac
         done
@@ -186,8 +186,8 @@ do_evict_entry() {
     fi
 
     # Re-check once more before removing the entry: a skip-hit restore holds only
-    # a target lock, not this key lock, so it can bump last-use — or record a new
-    # target not in the snapshot above — during the target loop. Deleting a
+    # a target lock, not this key lock, so it can bump last-use - or record a new
+    # target not in the snapshot above - during the target loop. Deleting a
     # now-hot entry would waste a re-save and strand a just-served target's
     # marker. Targets reclaimed above were idle when reclaimed and stay so.
     if ! is_cold "$meta"; then
@@ -202,7 +202,7 @@ do_evict_entry() {
     fi
     printf 'x\n' >> "$GC_ENTRIES_TALLY"
     printf '::notice::cache-gc: %s entry %s (%s, idle %sd)\n' "$GC_VERB" "$raw_key" "$entry_size" "$age_days"
-    append_summary "- **local-cache gc** \`${raw_key}\` → 🗑️ ${GC_SUM_VERB} (${entry_size}, idle ${age_days}d)"
+    append_summary "- **local-cache gc** \`${raw_key}\` -> ${GC_SUM_VERB} (${entry_size}, idle ${age_days}d)"
     return 0
 }
 
@@ -258,10 +258,10 @@ if [ -z "$cache_dir" ]; then
     exit 1
 fi
 # Reject 0 and leading zeros, not just non-digits. 0 makes cutoff=now, so a
-# just-bumped (hot) entry reads cold and `find -mtime -0` matches nothing —
+# just-bumped (hot) entry reads cold and `find -mtime -0` matches nothing -
 # both safety guards fail open and gc would delete an in-use target. Leading
 # zeros are octal traps: `$(( ))` reads 08/09 as an error (aborting the sweep)
-# and 010 as 8, while `find -mtime -010` reads 10 — one value, two windows.
+# and 010 as 8, while `find -mtime -010` reads 10 - one value, two windows.
 case "$max_age_days" in
     '' | *[!0-9]* | 0*)
         printf '::error::cache-gc: --max-age-days must be a positive integer without leading zeros, got: %s\n' "$max_age_days" >&2
@@ -271,7 +271,7 @@ esac
 
 entries_dir="${cache_dir}/entries"
 if [ ! -d "$entries_dir" ]; then
-    printf '::notice::cache-gc: no entries dir at %s — nothing to do\n' "$entries_dir"
+    printf '::notice::cache-gc: no entries dir at %s - nothing to do\n' "$entries_dir"
     exit 0
 fi
 
@@ -280,11 +280,11 @@ cutoff=$((now - max_age_days * 86400))
 if [ "$apply" = true ]; then
     verb=removed
     sum_verb=Evicted
-    printf '::notice::cache-gc: apply mode — entries and targets idle >%sd will be removed\n' "$max_age_days"
+    printf '::notice::cache-gc: apply mode - entries and targets idle >%sd will be removed\n' "$max_age_days"
 else
     verb=would-remove
     sum_verb=Reclaimable
-    printf '::notice::cache-gc: dry run — reporting entries idle >%sd (nothing removed)\n' "$max_age_days"
+    printf '::notice::cache-gc: dry run - reporting entries idle >%sd (nothing removed)\n' "$max_age_days"
 fi
 
 # Sweep-wide state shared with the lock-held subcommands via the environment.
@@ -302,7 +302,7 @@ GC_VERB="$verb"
 GC_SUM_VERB="$sum_verb"
 GC_ENTRIES_TALLY=$(mktemp)
 GC_TARGETS_TALLY=$(mktemp)
-# Clean the tallies on ANY exit — a set -e abort in the sweep below must not leak
+# Clean the tallies on ANY exit - a set -e abort in the sweep below must not leak
 # temp files on a long-lived runner. Only the main sweep reaches here; the
 # lock-held subcommands exit at the dispatch above, before this trap is armed.
 trap 'rm -f "$GC_ENTRIES_TALLY" "$GC_TARGETS_TALLY"' EXIT
@@ -322,7 +322,7 @@ for entry in "${entries_dir}"/*; do
     # Legacy entries predate the metadata file: no last-use signal and no raw
     # key, so leave them (clear those with `rm -rf entries/*` after upgrading).
     if [ ! -f "$meta" ]; then
-        printf '::debug::cache-gc: %s has no %s — skipping (legacy)\n' "$name" "$ENTRY_KEY_NAME"
+        printf '::debug::cache-gc: %s has no %s - skipping (legacy)\n' "$name" "$ENTRY_KEY_NAME"
         continue
     fi
 
@@ -331,19 +331,19 @@ for entry in "${entries_dir}"/*; do
     is_cold "$meta" || continue
 
     # The lock name is the RAW key (the same string save and restore lock on),
-    # so gc's key lock is the very lock those paths take — not merely a
+    # so gc's key lock is the very lock those paths take - not merely a
     # same-named sibling. local-mutex hashes it, so length and content are free.
     raw_key=$(cat "$meta" 2>/dev/null || printf '%s' "$name")
 
     GC_ENTRY_NAME="$name"
     # shellcheck disable=SC2016
     sh "$LOCAL_MUTEX_CLI" "cache-save-${raw_key}" 'sh "$GC_SELF" --__evict-entry' \
-        || printf '::warning::cache-gc: eviction of %s failed — kept\n' "$raw_key" >&2
+        || printf '::warning::cache-gc: eviction of %s failed - kept\n' "$raw_key" >&2
 done
 
 # Sweep record dirs whose entry is gone (e.g. after a manual `rm -rf entries/*`
 # reset): the records are useless without the entry's last-use signal. Removes
-# only the stale records, never the on-disk targets they name — once the entry
+# only the stale records, never the on-disk targets they name - once the entry
 # is gone there is no coldness signal to justify deleting a live copy. Lock-free
 # is safe: a restore only records under an entry that exists, so a dead entry's
 # record dir has no writer.
@@ -367,4 +367,4 @@ reclaimed_targets=$(wc -l < "$GC_TARGETS_TALLY" 2>/dev/null | tr -d '[:space:]')
 
 printf '::notice::cache-gc: %s %s entr(y/ies) and %s target(s) idle >%sd\n' \
     "$verb" "$reclaimed_entries" "$reclaimed_targets" "$max_age_days"
-append_summary "- **local-cache gc** → ${sum_verb} ${reclaimed_entries} entr(y/ies) + ${reclaimed_targets} target(s) idle >${max_age_days}d"
+append_summary "- **local-cache gc** -> ${sum_verb} ${reclaimed_entries} entr(y/ies) + ${reclaimed_targets} target(s) idle >${max_age_days}d"

@@ -1,4 +1,4 @@
-# local-cache — Agent Instructions
+# local-cache - Agent Instructions
 
 ## What this repo is
 
@@ -19,6 +19,8 @@ README.md for full context.
 - Every change ships with a test in `.github/workflows/ci.yml`.
 - Never add a `cache-dir` default. Callers must always be explicit
   about where their cache lives.
+- Tracked text is ASCII. Use plain hyphens, `->`, and words instead of Unicode
+  punctuation or decorative status symbols.
 
 ## The local-mutex dependency
 
@@ -32,7 +34,7 @@ it.
 | Lock | Held by |
 | --- | --- |
 | `cache-save-<key>` | Save, and the restore's full rsync. |
-| `cache-target-<path>` | The restore's quick check — and, nested inside the key lock, its full restore. |
+| `cache-target-<path>` | The restore's quick check - and, nested inside the key lock, its full restore. |
 | `cache-gc` | The gc sweep, store-wide. |
 
 The gc sweep re-invokes itself through local-mutex's exported
@@ -54,7 +56,7 @@ Why not a tag:
 - **`local-cache` is a published action.** Its `action.yml` ships to
   public consumers, so a floating `@v2` would let every local-mutex
   retag silently change behavior for a consumer pinned to
-  `local-cache@v3` — defeating the point of their pin.
+  `local-cache@v3` - defeating the point of their pin.
 - **A version tag is no better as a guarantee.** Tags stay movable
   after they are pushed. That we never move ours is a convention a
   consumer has no way to verify, and moved tags have been a
@@ -64,7 +66,7 @@ Why not a tag:
 ### Bumping the pin
 
 Move every site in one dedicated PR. `grep -rn local-mutex .`
-enumerates the live set — sweep that rather than a remembered count,
+enumerates the live set - sweep that rather than a remembered count,
 because a single file can carry the pin more than once.
 
 Two traps:
@@ -77,14 +79,14 @@ Two traps:
 - **The trailing comment is documentation, not a checked assertion.**
   Dependabot rewrites it when it bumps a `uses:` ref, but it will not
   repair one that is already wrong (dependabot-core#7912). Re-derive
-  the tag→SHA mapping from the local-mutex repo instead of trusting
+  the tag->SHA mapping from the local-mutex repo instead of trusting
   what the comment says.
 
 ## Pinning everything else
 
 The SHA rule above applies to local-mutex and stops there. Every other
-action in this repo — the `actions/checkout` steps in
-`.github/workflows/ci.yml` — stays on an exact version tag such as
+action in this repo - the `actions/checkout` steps in
+`.github/workflows/ci.yml` - stays on an exact version tag such as
 `@v7.0.1`. Do not "finish the job" by converting those to SHAs.
 
 Two reasons:
@@ -96,7 +98,7 @@ Two reasons:
   for actions pinned with semantic versioning, [not for actions pinned
   to a SHA][secure-use]. For a third-party action that genuinely
   receives advisories, converting it trades away vulnerability alerts
-  to gain protection against a tag move — a bad trade for a workflow
+  to gain protection against a tag move - a bad trade for a workflow
   that holds no secrets and runs on an ephemeral runner.
 
 This is why `ci.yml` carries both forms on adjacent lines:
@@ -111,7 +113,7 @@ This is why `ci.yml` carries both forms on adjacent lines:
 ```
 
 The `uses:` is a version tag because checkout is CI-only. The SHA below
-it is not a checkout pin at all — it is the local-mutex pin, which this
+it is not a checkout pin at all - it is the local-mutex pin, which this
 step carries because the tests must run against the identical
 local-mutex tree the actions resolve.
 
@@ -119,17 +121,18 @@ local-mutex tree the actions resolve.
 
 ## Releases
 
-Every release gets a **fixed patch tag** — `vMAJOR.MINOR.PATCH`, e.g.
-`v3.0.1` — that we never force-move once pushed. This is what
+Every release gets a **fixed patch tag** - `vMAJOR.MINOR.PATCH`, e.g.
+`v3.0.1` - that we never force-move once pushed. This is what
 downstream callers pin to when they want a stable reference.
 
-Treat that as a promise we keep, not a property the platform enforces:
-no tag ruleset protects this repo. A caller who needs the guarantee
-rather than the promise pins the commit SHA instead, exactly as we pin
-local-mutex above.
+The repository enforces that contract twice: the fixed-version-tag ruleset
+blocks updates and deletions of `vMAJOR.MINOR.PATCH`, and publishing its GitHub
+Release makes the tag and release assets immutable. A caller may still pin the
+commit SHA when its own policy requires a content-addressed reference, exactly
+as we pin local-mutex above.
 
-Every release also force-updates the **floating major tag** —
-`vMAJOR`, e.g. `v3` — so it always points at the latest `v3.x.y`
+Every release also force-updates the **floating major tag** -
+`vMAJOR`, e.g. `v3` - so it always points at the latest `v3.x.y`
 commit. Callers tracking `@v3` get automatic minor and patch updates
 inside that major series; callers pinned to `@v3.0.1` stay pinned
 forever. Both kinds of tag exist here, and both are part of the release
@@ -144,5 +147,5 @@ git push origin v3.0.1
 git tag -f v3 HEAD           # floating major tag
 git push --force origin v3
 
-gh release create v3.0.1
+gh release create v3.0.1  # locks the patch tag and release assets
 ```

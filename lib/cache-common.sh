@@ -9,7 +9,7 @@ ENTRY_KEY_NAME=".local-cache-key"
 # Restore targets are recorded under a top-level `targets/` dir in the cache (a
 # sibling of `entries/`), one subdir per entry keyed by the same encoded key,
 # one small file per target: name = target-path hash, content = the absolute
-# target path, mtime = last restore. Kept OUT of the entry dir on purpose —
+# target path, mtime = last restore. Kept OUT of the entry dir on purpose -
 # adding a child to an entry would bump the entry's mtime, which prefix/
 # restore-keys resolution sorts on (see touch-on-restore). cache-gc.sh reads it
 # to reclaim the per-runner copies when the entry is evicted.
@@ -21,10 +21,10 @@ TARGETS_DIR_NAME="targets"
 # cache-restore.sh (is the target already current?) and by cache-gc.sh (does
 # this target still belong to the entry being evicted?) before either skips a
 # restore or reclaims a copy. <matched-key> is the value the action emits as
-# cache-matched-key — the entry's raw key. Bumped only on a backward-
+# cache-matched-key - the entry's raw key. Bumped only on a backward-
 # incompatible change to the marker or entry layout (v1 used hard links; v2
 # uses full rsync copies). Referenced by literal in .github/workflows/ci.yml
-# marker tests — keep those literals in sync if you bump this.
+# marker tests - keep those literals in sync if you bump this.
 # shellcheck disable=SC2034
 MARKER_VERSION="v2"
 
@@ -53,7 +53,7 @@ append_summary() {
     fi
 }
 
-# Canonicalize a target path LEXICALLY (no symlink or ".." resolution — that
+# Canonicalize a target path LEXICALLY (no symlink or ".." resolution - that
 # needs a non-portable realpath). Collapses repeated slashes and drops "."
 # components and any trailing slash, so /tmp/foo, /tmp/foo/, /tmp//foo and
 # /tmp/./foo all yield /tmp/foo. This is what lets the per-target lock name and
