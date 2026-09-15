@@ -13,7 +13,7 @@
 # Even under the action's mutex, the script does a post-acquire re-check: if
 # a sibling runner finished saving the same key while we waited on the lock,
 # the entry will already exist and we exit cleanly rather than rsync-ing on
-# top of it. Without the re-check, the final `mv` would NOT fail — POSIX mv
+# top of it. Without the re-check, the final `mv` would NOT fail - POSIX mv
 # nests the staging dir inside the existing entry, leaving a corrupted layout
 # (real files at the top level, a ghost .tmp-<key>-<pid>/ subdir alongside
 # them). The mutex serializes the rsync+mv pair; the re-check makes the
@@ -21,7 +21,7 @@
 #
 # Atomic publication: rsync to a temp dir under entries/, then mv into
 # place. Concurrent readers either see the old (or no) entry or the
-# fully-written new one — never a partial directory.
+# fully-written new one - never a partial directory.
 set -eu
 
 script_dir=$(
@@ -50,17 +50,17 @@ start_time=$(date +%s)
 encoded_key=$(encode_key "$cache_key")
 
 if [ ! -d "$path_to_cache" ]; then
-    printf '::notice::Cache save skipped — source path does not exist: %s\n' "$path_to_cache"
+    printf '::notice::Cache save skipped - source path does not exist: %s\n' "$path_to_cache"
     exit 0
 fi
 
 # After acquiring the mutex, re-check whether another waiter already populated
-# the entry. If so, exit cleanly — the cache is consistent and we have no work
+# the entry. If so, exit cleanly - the cache is consistent and we have no work
 # to do. This check is load-bearing: it is the reason waiting on local-mutex is
 # safe. Without it, a second caller waking up after the first released the lock
 # would rsync into its own ".tmp-<encoded_key>-$$" staging dir (the $$ disambiguates
 # tmp paths so they never literally collide), then the final `mv` would silently
-# NEST that staging dir inside the existing entry — POSIX `mv src dest` where
+# NEST that staging dir inside the existing entry - POSIX `mv src dest` where
 # dest is an existing directory moves src to dest/basename(src) rather than
 # failing. The result is a corrupted entry whose real files live at
 # entries/<encoded-key>/ shadowed by a ghost subdirectory
@@ -81,7 +81,7 @@ trap cleanup_tmp EXIT INT TERM
 
 printf '::debug::Saving to local cache: %s\n' "$cache_key"
 # Exclude the restore marker so a prefix-hit restore followed by save on the
-# same path (restore → install → save, the canonical README pattern) doesn't
+# same path (restore -> install -> save, the canonical README pattern) doesn't
 # carry the previous entry's name into the new entry on disk.
 rsync -a --exclude="${MARKER_NAME}" "${path_to_cache}/" "${tmp_entry}/"
 printf '%s' "$cache_key" > "${tmp_entry}/${ENTRY_KEY_NAME}"
@@ -92,4 +92,4 @@ size=$(du -sh "${entries_dir}/${encoded_key}" 2>/dev/null | cut -f1 || printf '?
 file_count=$(find "${entries_dir}/${encoded_key}" -type f | wc -l | tr -d ' ')
 printf '::notice::Cache saved: %s (%s files, %s in %ds)\n' "$cache_key" "$file_count" "$size" "$elapsed"
 printf '::debug::Entry path: %s\n' "${entries_dir}/${encoded_key}"
-append_summary "- **local-cache** \`${cache_key}\` → 💾 Saved (${size}, ${elapsed}s)"
+append_summary "- **local-cache** \`${cache_key}\` -> Saved (${size}, ${elapsed}s)"

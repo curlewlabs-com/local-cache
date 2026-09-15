@@ -40,7 +40,7 @@ jobs:
     env:
       # cache-gc.sh re-invokes itself through local-mutex's CLI to take the same
       # per-key/per-target locks the actions hold, so the direct-script gc tests
-      # below need it. Point at a checkout of the exact version the actions pin —
+      # below need it. Point at a checkout of the exact version the actions pin -
       # the real primitive, not a stub. Steps that go through an action get their
       # own copy from that action's `uses:` and ignore this.
       LOCAL_MUTEX_CLI: ${{ github.workspace }}/.local-mutex/lib/local-mutex.sh
@@ -519,13 +519,13 @@ jobs:
 
       # Sequential idempotent save: verify that a save against an already-
       # populated entry exits cleanly without touching the existing content.
-      # This does NOT exercise parallel mutex contention — real contention is
+      # This does NOT exercise parallel mutex contention - real contention is
       # tested by curlewlabs-com/local-mutex in its own repo. What it does
       # exercise is the re-check inside cache-save.sh that makes the waiter
       # path safe: once the entry exists, a second caller (whether arriving
       # after a lock release or just running later in the same job) must
       # detect the existing entry and skip the rsync+mv entirely. The
-      # regression this guards is NOT clobbering — it is nesting. POSIX
+      # regression this guards is NOT clobbering - it is nesting. POSIX
       # `mv src dest` where dest is an existing directory moves src to
       # dest/basename(src) rather than failing, so a removed re-check would
       # leave the second writer's staging dir nested as
@@ -556,7 +556,7 @@ jobs:
       - name: Verify the first writer's content survived
         run: |
           # The existing-entry guard must let the second save exit before
-          # touching the existing entry — so the first writer's content
+          # touching the existing entry - so the first writer's content
           # is what stays on disk.
           . lib/cache-common.sh
           encoded_key=$(encode_key 'idempotent-key')
@@ -588,7 +588,7 @@ jobs:
 
       - name: Second restore with same key is skipped
         run: |
-          # Modify the restored content — if restore skips, this survives.
+          # Modify the restored content - if restore skips, this survives.
           echo "modified" > /tmp/test-marker-dst/data.txt
           sh lib/cache-restore.sh /tmp/test-marker-dst marker-key /tmp/local-cache ""
           content=$(cat /tmp/test-marker-dst/data.txt)
@@ -613,7 +613,7 @@ jobs:
 
       - name: v1 target (no marker) is replaced on restore
         run: |
-          # Simulate a v1 restore — content exists but no marker file.
+          # Simulate a v1 restore - content exists but no marker file.
           mkdir -p /tmp/test-v1-target
           echo "v1-content" > /tmp/test-v1-target/data.txt
           sh lib/cache-restore.sh /tmp/test-v1-target marker-key /tmp/local-cache ""
@@ -624,7 +624,7 @@ jobs:
             || (echo "Expected v2 marker after migration" && exit 1)
           echo "v1 migration: OK"
 
-      - name: Restore isolation — modifying restored files does not corrupt cache
+      - name: Restore isolation - modifying restored files does not corrupt cache
         run: |
           sh lib/cache-restore.sh /tmp/test-isolation-dst marker-key /tmp/local-cache ""
           echo "corrupted" > /tmp/test-isolation-dst/data.txt
@@ -635,7 +635,7 @@ jobs:
             || (echo "Cache entry corrupted: expected 'marker-test', got '$cached'" && exit 1)
           echo "Restore isolation: OK"
 
-      - name: Concurrent restores — each consumer gets an isolated copy
+      - name: Concurrent restores - each consumer gets an isolated copy
         run: |
           mkdir -p /tmp/test-concurrent-restore-src
           echo "shared" > /tmp/test-concurrent-restore-src/data.txt
@@ -662,9 +662,9 @@ jobs:
       # A second prefix restore against an already-populated target must hit
       # the marker-skip branch in cache-restore.sh (is_current on the
       # is_exact="false" path). Existing tests cover exact-hit-skip and
-      # prefix-match-first-time, but not this second-call-is-skipped case —
-      # which is the steady-state behavior for the README's restore → install
-      # → save pattern when the caller's exact key is slightly newer than the
+      # prefix-match-first-time, but not this second-call-is-skipped case -
+      # which is the steady-state behavior for the README's restore -> install
+      # -> save pattern when the caller's exact key is slightly newer than the
       # fallback. If this branch regresses, the restore silently starts doing
       # full rsync work on every invocation instead of constant-time work.
       - name: Second prefix restore against populated target is a marker-skip
@@ -681,7 +681,7 @@ jobs:
           [ "$marker" = "v2:prefix-marker-v1" ] \
             || (echo "Expected marker 'v2:prefix-marker-v1' after first prefix restore, got '$marker'" && exit 1)
 
-          # Modify the restored content — if the second restore skips via
+          # Modify the restored content - if the second restore skips via
           # marker-match, this modification survives (no rsync overwrite).
           # Same pattern as the "Second restore with same key is skipped" test,
           # but on the prefix-resolution branch.
@@ -692,8 +692,8 @@ jobs:
             || (echo "Second prefix restore did not hit marker-skip: expected 'modified-between-restores', got '$content'" && exit 1)
           echo "Prefix restore marker-skip: OK"
 
-      # When a caller runs the README's canonical pattern (restore → install
-      # → save on the same path) and the restore was a prefix hit, the target
+      # When a caller runs the README's canonical pattern (restore -> install
+      # -> save on the same path) and the restore was a prefix hit, the target
       # ends up with a .local-cache-restore marker pointing at the matched
       # entry. The save step must exclude that marker from the new entry on
       # disk, or else every cache entry that was ever populated via a prefix
@@ -719,7 +719,7 @@ jobs:
           [ -d "/tmp/local-cache/entries/${encoded_key}" ] \
             || (echo "Expected new entry save-exclude-v2" && exit 1)
           [ ! -f "/tmp/local-cache/entries/${encoded_key}/.local-cache-restore" ] \
-            || (echo "rsync did not exclude marker — new entry contains stale marker from prefix source" && exit 1)
+            || (echo "rsync did not exclude marker - new entry contains stale marker from prefix source" && exit 1)
           [ -f "/tmp/local-cache/entries/${encoded_key}/.local-cache-key" ] \
             || { echo "Expected metadata file in encoded entry"; exit 1; }
           [ -f "/tmp/local-cache/entries/${encoded_key}/data.txt" ] \
@@ -789,7 +789,7 @@ jobs:
           # First populate a target so the marker exists.
           sh lib/cache-restore.sh /tmp/two-env-dst-check phase-v1 /tmp/local-cache-2 ""
 
-          # Now run --check against the same target — marker matches, so
+          # Now run --check against the same target - marker matches, so
           # this hits the is_current block and should still write GITHUB_ENV.
           out=$(mktemp)
           env_out=$(mktemp)
@@ -834,12 +834,12 @@ jobs:
           echo "Action output mapping: OK"
 
       # Touch-on-restore (LRU signal). A served restore must stamp the entry's
-      # last-use time — the mtime of its metadata file (.local-cache-key) — so
+      # last-use time - the mtime of its metadata file (.local-cache-key) - so
       # an external least-recently-used sweep can reclaim space by genuine
       # recency of use. This must hold on the constant-time marker-skip path
       # (where a hot-but-old entry would otherwise look stale and risk wrongful
       # eviction), and it must NOT move the entry *directory's* mtime, which
-      # prefix/restore-keys resolution sorts on — moving it would silently
+      # prefix/restore-keys resolution sorts on - moving it would silently
       # retarget selection from most-recently-saved to most-recently-used.
       - name: Restore stamps last-use time without disturbing selection order
         run: |
@@ -866,7 +866,7 @@ jobs:
           [ "$(stat_mtime "${entry}/.local-cache-key")" -gt "$meta_before" ] \
             || (echo "skip-path restore did not stamp last-use time" && exit 1)
           [ "$(stat_mtime "${entry}")" = "$dir_before" ] \
-            || (echo "skip-path restore moved entry dir mtime — corrupts prefix selection order" && exit 1)
+            || (echo "skip-path restore moved entry dir mtime - corrupts prefix selection order" && exit 1)
 
           # Full-rsync path (fresh target) also stamps last-use time.
           touch -t 202001010000 "${entry}/.local-cache-key"
@@ -881,7 +881,7 @@ jobs:
       # arg would abort with "unbound variable" before the script's own
       # empty-arg check runs. The entry scripts guard the positionals (${1:-})
       # so the caller-facing "must not be empty" error stays the single failure
-      # path. Assert that contract for both scripts — exit 1 with the friendly
+      # path. Assert that contract for both scripts - exit 1 with the friendly
       # message, never a leaked nounset abort.
       - name: Entry scripts report missing args cleanly under set -eu
         run: |
@@ -918,7 +918,7 @@ jobs:
           echo data > /tmp/gc-r-src/data.txt
           sh lib/cache-save.sh /tmp/gc-r-src rec-key "$GC"
           entry="$GC/entries/$(encode_key rec-key)"
-          # Age the entry dir so we can prove a restore does not bump its mtime —
+          # Age the entry dir so we can prove a restore does not bump its mtime -
           # prefix/restore-keys resolution sorts entries on it.
           touch -t 202001010000 "$entry"
           dir_before=$(stat_mtime "$entry")
@@ -934,7 +934,7 @@ jobs:
           # into the restored target either.
           [ ! -e "$entry/targets" ] || (echo "records leaked into the entry" && exit 1)
           [ "$(stat_mtime "$entry")" = "$dir_before" ] \
-            || (echo "restore moved the entry dir mtime — corrupts prefix selection" && exit 1)
+            || (echo "restore moved the entry dir mtime - corrupts prefix selection" && exit 1)
           [ ! -e /tmp/gc-r-tgt/targets ] \
             || (echo "records leaked into the restored target" && exit 1)
           echo "Target recording (parallel tree, entry untouched): OK"
@@ -986,10 +986,10 @@ jobs:
           sh lib/cache-gc.sh --apply --max-age-days 1 "$GC"
           [ -d "$live_entry" ] || (echo "entry with a live target must be kept" && exit 1)
           [ -d /tmp/gc-l-tgt ] || (echo "a live target must not be reclaimed" && exit 1)
-          # The record must survive too, or the live copy is orphaned — a later
+          # The record must survive too, or the live copy is orphaned - a later
           # sweep could never reclaim it once it goes idle.
           [ -f "$GC/targets/$(encode_key elive-key)/$(sha256_hex /tmp/gc-l-tgt)" ] \
-            || (echo "live target's record was dropped — copy would be orphaned" && exit 1)
+            || (echo "live target's record was dropped - copy would be orphaned" && exit 1)
           echo "GC spares cold entry with a live target (record kept): OK"
 
       - name: GC spares a dangerous target path but still reclaims its cold entry
@@ -1005,7 +1005,7 @@ jobs:
           printf '%s' /tmp/gc-d-home > "$GC/targets/$(encode_key edanger-key)/forged"
           touch -t 202001010000 "$dentry/.local-cache-key"
           # The reclaim step guards the forged path (never rm a HOME/root/
-          # workspace), so HOME survives — but the cold entry and its forged
+          # workspace), so HOME survives - but the cold entry and its forged
           # record are still reclaimed, so one bad record can't pin an entry in
           # the store forever.
           HOME=/tmp/gc-d-home sh lib/cache-gc.sh --apply --max-age-days 1 "$GC"
@@ -1039,11 +1039,11 @@ jobs:
           [ ! -d "$k1_entry" ] || (echo "cold k1 entry should be evicted" && exit 1)
           [ -d "$k2_entry" ] || (echo "hot k2 entry wrongly evicted" && exit 1)
           [ -e /tmp/gc-o-tgt ] \
-            || (echo "target wrongly reclaimed — it belongs to hot k2, not cold k1" && exit 1)
+            || (echo "target wrongly reclaimed - it belongs to hot k2, not cold k1" && exit 1)
           echo "GC target ownership (marker, not record): OK"
 
       # The reclaim step re-checks the owning entry's coldness UNDER the target
-      # lock — the guard that catches a concurrent skip-hit restore, which bumps
+      # lock - the guard that catches a concurrent skip-hit restore, which bumps
       # the owner's last-use while holding that lock and leaves the target's
       # files untouched (so the mtime backstop can't see it). Exercised on the
       # internal reclaim subcommand with a hot vs cold owner, target files aged
@@ -1070,7 +1070,7 @@ jobs:
           [ "$rc" = 3 ] \
             || (echo "hot owner should signal live (exit 3), got $rc" && exit 1)
           [ -e /tmp/gc-oc-tgt ] \
-            || (echo "reclaim deleted a target whose owner is hot — a live job would break" && exit 1)
+            || (echo "reclaim deleted a target whose owner is hot - a live job would break" && exit 1)
           touch -t 202001010000 "$meta"   # cold owner -> reclaim (exit 0)
           set +e
           GC_TARGET_PATH=/tmp/gc-oc-tgt GC_OWNER_KEY=oc-key GC_OWNER_META="$meta" \
@@ -1092,7 +1092,7 @@ jobs:
       # Phase 1 resolves and emits that stored key as matched-key, and Phase 2
       # locks cache-save-<matched-key>. Locking the requested key instead would
       # leave the rsync SOURCE unprotected and let gc rm it mid-copy. Assert the
-      # resolved lock key is the entry's stored key — the same string gc locks on.
+      # resolved lock key is the entry's stored key - the same string gc locks on.
       - name: Restore locks on the matched entry key, not the requested key
         run: |
           . lib/cache-common.sh
@@ -1116,7 +1116,7 @@ jobs:
           echo "Restore matched-key == gc evict key (prefix source-eviction safe): OK"
 
       # If gc evicts the resolved entry in the window between Phase 1 and Phase 2,
-      # Phase 2 finds it gone and must miss cleanly — never copy a half-deleted
+      # Phase 2 finds it gone and must miss cleanly - never copy a half-deleted
       # source or disturb the caller's target.
       - name: Restore of an entry evicted mid-flight misses without touching the target
         run: |
@@ -1148,7 +1148,7 @@ jobs:
           echo "GC no-lock-CLI refusal: OK"
 
       # max-age-days=0 makes cutoff=now (hot reads cold) and find -mtime -0 match
-      # nothing — both guards fail open. Leading zeros are octal traps. All must
+      # nothing - both guards fail open. Leading zeros are octal traps. All must
       # be rejected, not silently mis-windowed.
       - name: GC rejects unsafe max-age-days values
         run: |
@@ -1191,7 +1191,7 @@ jobs:
           echo "GC path normalization (one lock/record per physical target): OK"
 
       # The orphan-record sweep removes records whose entry is gone (e.g. a manual
-      # entries/ reset) but must NEVER delete the live on-disk dir a record names —
+      # entries/ reset) but must NEVER delete the live on-disk dir a record names -
       # with the entry gone there is no coldness signal to justify it.
       - name: GC removes orphaned records but never the live dirs they name
         run: |
@@ -1220,7 +1220,7 @@ jobs:
             || (echo "gc evicted a legacy entry with no metadata" && exit 1)
           echo "GC legacy-entry skip: OK"
 
-      # A store with no entries dir is a clean no-op (not an error) — with the
+      # A store with no entries dir is a clean no-op (not an error) - with the
       # lock CLI present, so this reaches that branch rather than the CLI guard.
       - name: GC on a store with no entries dir exits cleanly
         run: |
@@ -1288,8 +1288,8 @@ jobs:
           echo "GC action end-to-end (real local-mutex wiring): OK"
 
   # Concurrency stress. The deterministic tests above pin the lock NAMES; this
-  # job exercises the real thing — many prefix-restores racing gc on a shared
-  # cache-dir through the actual two-phase lock flow — and asserts the one
+  # job exercises the real thing - many prefix-restores racing gc on a shared
+  # cache-dir through the actual two-phase lock flow - and asserts the one
   # invariant that holds under every interleaving: a restore target is either
   # absent (a clean miss) or byte-identical to its source, never a partial copy.
   # The eviction race window is narrow, so per-machine detection is
@@ -1324,7 +1324,7 @@ jobs:
           repository: curlewlabs-com/local-mutex
           ref: 88393519d9c8488eeea41bbbb810e33a1ac6609a # v2.1.0
           path: .local-mutex
-      - name: Stress — prefix-restores racing gc on a shared cache-dir
+      - name: Stress - prefix-restores racing gc on a shared cache-dir
         env:
           ROUNDS: 30
           NENTRIES: 5
@@ -1417,7 +1417,7 @@ jobs:
 
           echo "stress: rounds=$ROUNDS restorers/round=$NENTRIES hits=$hits misses=$misses corrupt=$corrupt"
           if [ "$corrupt" -ne 0 ]; then
-            echo "FAIL: $corrupt corrupt restore(s) — gc raced a live restore"
+            echo "FAIL: $corrupt corrupt restore(s) - gc raced a live restore"
             exit 1
           fi
           if [ $((hits + misses)) -eq 0 ]; then

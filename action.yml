@@ -1,6 +1,6 @@
 name: 'Runner Local Cache'
 description: >-
-  Local-disk cache for self-hosted runners — drop-in replacement for actions/cache, less network IO.
+  Local-disk cache for self-hosted runners - drop-in replacement for actions/cache, less network IO.
 author: 'curlewlabs-com'
 branding:
   icon: 'hard-drive'
@@ -62,7 +62,7 @@ runs:
     # If the target already holds the requested key (steady state) we finish
     # here without taking the per-key lock. The lock is keyed by the target
     # PATH, not the cache key, so distinct runners restoring to their own paths
-    # never contend — this stays parallel across the fleet. What it does
+    # never contend - this stays parallel across the fleet. What it does
     # serialize against is gc's target reclaim (gc holds the same
     # cache-target-<path> lock): is_current and the last-use bump can't
     # interleave with a reclaim of that same target. local-mutex captures the
@@ -93,13 +93,13 @@ runs:
 
     # Phase 2: Serialized restore. Runs when Phase 1 found a match it could not
     # serve from an already-current target (skipped on a miss, when matched-key
-    # is empty). Takes the per-KEY lock on the MATCHED entry's own key — not the
-    # requested key — so it is the very lock gc takes to evict that entry: on a
+    # is empty). Takes the per-KEY lock on the MATCHED entry's own key - not the
+    # requested key - so it is the very lock gc takes to evict that entry: on a
     # restore-keys (prefix) hit the served entry's stored key differs from the
     # requested key, and locking the requested key would leave the rsync SOURCE
     # unprotected against a concurrent eviction. Nested inside it is the
     # per-TARGET lock (protects the target as the rsync DEST against gc reclaim).
-    # The nest order is key ⊃ target — the same order gc acquires them — so a
+    # The nest order is key -> target - the same order gc acquires them - so a
     # restore and a sweep can never deadlock. cache-restore.sh restores the exact
     # entry Phase 1 resolved (--restore <matched-name>), never re-resolving to a
     # different, unlocked one. The inner lock is taken via local-mutex's own CLI

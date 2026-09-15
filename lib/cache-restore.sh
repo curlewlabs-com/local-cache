@@ -18,12 +18,12 @@
 #   LOCAL_CACHE_MATCHED_KEY=<key>
 #
 # On a cache hit, rsync copies the entry to the target path.  The value
-# of the local cache is avoiding repeated network downloads — the copy
+# of the local cache is avoiding repeated network downloads - the copy
 # itself is a plain local operation (a few seconds for ~1.8 GB).
 #
 # A marker file (.local-cache-restore) in the target directory records
 # which cache key was last restored.  When the marker matches the
-# current key, the restore is skipped entirely — constant-time work.  When it
+# current key, the restore is skipped entirely - constant-time work.  When it
 # doesn't match (or is missing, e.g. from a v1 hard-link restore), the
 # target is cleaned and re-synced from the local cache.
 set -eu
@@ -36,7 +36,7 @@ script_dir=$(
 
 check_only="false"
 # Phase 2 restores the exact entry Phase 1 already resolved (--restore <name>),
-# so the per-key lock it holds names that entry's own key — the same lock gc
+# so the per-key lock it holds names that entry's own key - the same lock gc
 # takes to evict it. Empty in Phase 1 and for direct callers, which resolve
 # inline.
 restore_entry=""
@@ -87,7 +87,7 @@ check_not_restore_ancestor() {
     [ -z "$danger_norm" ] && danger_norm="/"
     case "$danger_norm" in
         "$target_norm"|"$target_norm"/*)
-            printf '::error::cache-restore: refusing to restore to %s — rm -rf would delete %s (%s)\n' "$path_to_cache" "$danger_label" "$danger_raw" >&2
+            printf '::error::cache-restore: refusing to restore to %s - rm -rf would delete %s (%s)\n' "$path_to_cache" "$danger_label" "$danger_raw" >&2
             exit 2
             ;;
     esac
@@ -114,11 +114,11 @@ case "$path_to_cache" in
         ;;
 esac
 
-# Trivially unsafe paths — caught even when HOME/RUNNER_WORKSPACE/
+# Trivially unsafe paths - caught even when HOME/RUNNER_WORKSPACE/
 # GITHUB_WORKSPACE are all unset (e.g. local smoke-testing).
 case "$path_to_cache" in
     /|/.|/..)
-        printf '::error::cache-restore: refusing to restore to %s — rm -rf would affect the system root\n' "$path_to_cache" >&2
+        printf '::error::cache-restore: refusing to restore to %s - rm -rf would affect the system root\n' "$path_to_cache" >&2
         exit 2
         ;;
 esac
@@ -171,7 +171,7 @@ is_current() {
 # directory would silently retarget selection from most-recently-saved to
 # most-recently-used. Touching a file inside the directory leaves the
 # directory's own mtime untouched (only adding/removing entries changes it),
-# keeping the two signals separate — directory mtime = last write, metadata
+# keeping the two signals separate - directory mtime = last write, metadata
 # mtime = last use. Best-effort: a read-only store, or a legacy pre-encoding
 # entry that predates the metadata file, must not fail an otherwise-good
 # restore.
@@ -184,12 +184,12 @@ mark_used() {
 
 # Record this restore's target so cache-gc.sh can reclaim the per-runner copy
 # once the entry goes cold. Records live in a parallel targets/<encoded-key>/
-# tree (a sibling of entries/), NOT inside the entry — writing into the entry
+# tree (a sibling of entries/), NOT inside the entry - writing into the entry
 # would bump its directory mtime, which prefix/restore-keys resolution sorts on.
 # One file per target, named by the target-path hash: concurrent restores of
 # the same key to different runner targets write different files, so no lock is
 # needed even on the constant-time skip path. Content is the absolute target;
-# the file's mtime is this restore's time. Best-effort — a read-only store must
+# the file's mtime is this restore's time. Best-effort - a read-only store must
 # not fail an otherwise-good restore.
 record_target() {
     # Record the LEXICALLY-NORMALIZED path (see normalize_path). gc locks
@@ -206,13 +206,13 @@ record_target() {
 }
 
 # Emit the miss outputs. Used both on a genuine miss and when the entry Phase 1
-# resolved was evicted before Phase 2 could lock it — a clean miss beats copying
+# resolved was evicted before Phase 2 could lock it - a clean miss beats copying
 # a half-deleted source. Leaves the target untouched, matching a cold-start miss.
 emit_miss() {
     em_elapsed=$(( $(date +%s) - start_time ))
     printf '::notice::Cache miss: %s\n' "$cache_key"
     printf '::debug::No match found for key or any restore-keys prefix\n'
-    append_summary "- **local-cache** \`${cache_key}\` → ❌ Miss (${em_elapsed}s)"
+    append_summary "- **local-cache** \`${cache_key}\` -> Miss (${em_elapsed}s)"
     printf 'cache-hit=false\n' >> "$GITHUB_OUTPUT"
     printf 'cache-matched-key=\n' >> "$GITHUB_OUTPUT"
     if [ -n "${GITHUB_ENV:-}" ]; then
@@ -226,18 +226,18 @@ do_restore() {
     is_exact="$3"
 
     # If a previous v2 restore left a marker matching this key, the
-    # target already has the right content — skip the copy entirely.
+    # target already has the right content - skip the copy entirely.
     if is_current "$matched_key"; then
         elapsed=$(( $(date +%s) - start_time ))
-        printf '::debug::Target is current (marker matches) — skipping restore\n'
+        printf '::debug::Target is current (marker matches) - skipping restore\n'
         if [ "$is_exact" = "true" ]; then
             printf 'cache-hit=true\n' >> "$GITHUB_OUTPUT"
             printf '::notice::Cache hit (exact, skipped): %s (%ds)\n' "$matched_key" "$elapsed"
-            append_summary "- **local-cache** \`${matched_key}\` → ✅ Hit (skipped, ${elapsed}s)"
+            append_summary "- **local-cache** \`${matched_key}\` -> Hit (skipped, ${elapsed}s)"
         else
             printf 'cache-hit=false\n' >> "$GITHUB_OUTPUT"
             printf '::notice::Cache hit (prefix, skipped): %s (%ds)\n' "$matched_key" "$elapsed"
-            append_summary "- **local-cache** \`${matched_key}\` → ⚠️ Prefix hit (skipped, ${elapsed}s)"
+            append_summary "- **local-cache** \`${matched_key}\` -> Prefix hit (skipped, ${elapsed}s)"
         fi
         printf 'cache-matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
 
@@ -259,7 +259,7 @@ do_restore() {
         return
     fi
 
-    # Target is stale, from v1, or doesn't exist — start fresh.
+    # Target is stale, from v1, or doesn't exist - start fresh.
     # NOTE: concurrent restores to the *same* target path are unsupported.
     # Each runner must have its own path value (e.g. runner.tool_cache).
     rm -rf "$path_to_cache"
@@ -281,11 +281,11 @@ do_restore() {
     if [ "$is_exact" = "true" ]; then
         printf 'cache-hit=true\n' >> "$GITHUB_OUTPUT"
         printf '::notice::Cache hit (exact): %s (%s in %ds)\n' "$matched_key" "$size" "$elapsed"
-        append_summary "- **local-cache** \`${matched_key}\` → ✅ Hit (${size}, ${elapsed}s)"
+        append_summary "- **local-cache** \`${matched_key}\` -> Hit (${size}, ${elapsed}s)"
     else
         printf 'cache-hit=false\n' >> "$GITHUB_OUTPUT"
         printf '::notice::Cache hit (prefix): %s (%s in %ds)\n' "$matched_key" "$size" "$elapsed"
-        append_summary "- **local-cache** \`${matched_key}\` → ⚠️ Prefix hit (${size}, ${elapsed}s)"
+        append_summary "- **local-cache** \`${matched_key}\` -> Prefix hit (${size}, ${elapsed}s)"
     fi
     printf 'cache-matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
 
@@ -301,15 +301,15 @@ encoded_key=$(encode_key "$cache_key")
 legacy_safe_key=$(printf '%s' "$cache_key" | tr -c 'a-zA-Z0-9._-' '_')
 
 if [ "${RUNNER_DEBUG:-}" = "1" ]; then
-    printf '::debug::Checking local cache — key: %s, entries-dir: %s\n' "$cache_key" "$entries_dir"
+    printf '::debug::Checking local cache - key: %s, entries-dir: %s\n' "$cache_key" "$entries_dir"
 fi
 
 # Phase 2: restore the exact entry Phase 1 resolved and is locked on. Re-running
 # the resolution here could land on a DIFFERENT entry (a prefix hit's newest
 # match can change between the phases), which the held cache-save-<matched-key>
-# lock would not cover — reopening the eviction race the lock exists to close. An
+# lock would not cover - reopening the eviction race the lock exists to close. An
 # exact/legacy name carries the requested key; any other name is a prefix hit
-# carrying the entry's own stored key. If the entry was evicted in the Phase 1→2
+# carrying the entry's own stored key. If the entry was evicted in the Phase 1->2
 # window it is simply gone, so miss cleanly.
 if [ -n "$restore_entry" ]; then
     entry_path="${entries_dir}/${restore_entry}"
@@ -326,7 +326,7 @@ if [ -n "$restore_entry" ]; then
 fi
 
 # Resolve the matching entry once: exact, then legacy-safe name, then the newest
-# restore-keys prefix match. matched_key is the key the marker and gc lock on —
+# restore-keys prefix match. matched_key is the key the marker and gc lock on -
 # the requested key for an exact/legacy hit, the entry's own stored key for a
 # prefix hit (gc skips legacy entries, which have no stored key).
 matched_name=""
@@ -348,8 +348,8 @@ elif [ -n "$restore_keys" ]; then
         [ -n "$matched_name" ] && break
         # SHA-256 directory names are not prefix-preserving, so we scan
         # all entries and compare stored raw keys.  ls -dt sorts newest
-        # first.  Entry names are k-<hex> or legacy [a-zA-Z0-9._-]+ —
-        # no whitespace — so word-splitting in the for-loop is safe.
+        # first.  Entry names are k-<hex> or legacy [a-zA-Z0-9._-]+ -
+        # no whitespace - so word-splitting in the for-loop is safe.
         # shellcheck disable=SC2012,SC2015
         for entry_name in $(cd "${entries_dir}" 2>/dev/null && ls -dt -- * 2>/dev/null || true); do
             case "$entry_name" in
@@ -377,7 +377,7 @@ fi
 
 if [ "$check_only" = "true" ]; then
     # Hand the resolved entry to Phase 2 so its per-key lock names this entry's
-    # own key — the same lock gc takes to evict it.
+    # own key - the same lock gc takes to evict it.
     printf 'matched-name=%s\n' "$matched_name" >> "$GITHUB_OUTPUT"
     printf 'matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
 fi

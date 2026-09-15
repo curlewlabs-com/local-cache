@@ -18,8 +18,8 @@ inputs:
       Evict entries not restored in this many days, and their recorded restore
       targets. A retention policy: size it to your disk budget and how fast your
       keys roll (days to weeks; default 30). It must stay comfortably above your
-      longest job — the correctness floor, since target deletion is gated on this
-      time threshold, not a lock — but that floor is far below a sensible
+      longest job - the correctness floor, since target deletion is gated on this
+      time threshold, not a lock - but that floor is far below a sensible
       retention window.
     required: false
     default: '30'
@@ -39,7 +39,7 @@ runs:
     # to take the very same per-key (cache-save-<key>) and per-target
     # (cache-target-<path>) locks the save/restore paths hold, so it evicts a
     # cold entry only under that entry's key lock and reclaims a target only
-    # under that target's lock — a sweep never races a concurrent restore/save.
+    # under that target's lock - a sweep never races a concurrent restore/save.
     #
     # Pinned to a commit SHA (not a version tag, which stays movable) so a
     # local-cache@v3 consumer sees deterministic behavior across reruns. See
