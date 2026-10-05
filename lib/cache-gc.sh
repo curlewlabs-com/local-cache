@@ -32,7 +32,7 @@
 # target lock while waiting on a key lock (restore Phase 1 takes only the target
 # lock), so a sweep and a restore can never deadlock. Whole entries and whole targets
 # only, never individual files, because a partial delete would corrupt the
-# rsync source of a concurrent restore.
+# copy source of a concurrent restore.
 #
 # Safety is layered. The locks make eviction atomic against concurrent saves
 # and restores. But a job USES a restored target for minutes after its restore
@@ -312,7 +312,7 @@ export GC_SELF GC_CACHE_DIR GC_MAX_AGE_DAYS GC_APPLY GC_NOW GC_CUTOFF \
 for entry in "${entries_dir}"/*; do
     [ -d "$entry" ] || continue
     name=$(basename "$entry")
-    # Staging dirs from an interrupted save (SIGKILL/OOM between rsync and mv)
+    # Staging dirs from an interrupted save (SIGKILL/OOM between copy and mv)
     # are not real entries.
     case "$name" in
         .tmp-*) continue ;;

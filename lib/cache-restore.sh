@@ -17,9 +17,11 @@
 #   LOCAL_CACHE_HIT=true|false
 #   LOCAL_CACHE_MATCHED_KEY=<key>
 #
-# On a cache hit, rsync copies the entry to the target path.  The value
-# of the local cache is avoiding repeated network downloads - the copy
-# itself is a plain local operation (a few seconds for ~1.8 GB).
+# On a cache hit, the entry is copied to the target path - cloned where the
+# filesystem supports reflinks, rsync otherwise (copy_tree in
+# cache-common.sh).  The value of the local cache is avoiding repeated
+# network downloads - the copy itself is a plain local operation (a few
+# seconds for ~1.8 GB with rsync; a clone writes no file data at all).
 #
 # A marker file (.local-cache-restore) in the target directory records
 # which cache key was last restored.  When the marker matches the
@@ -264,11 +266,7 @@ do_restore() {
     # Each runner must have its own path value (e.g. runner.tool_cache).
     rm -rf "$path_to_cache"
     mkdir -p "$path_to_cache"
-    rsync -a \
-        --exclude="${MARKER_NAME}" \
-        --exclude="${ENTRY_KEY_NAME}" \
-        "$entry_path/" \
-        "$path_to_cache/"
+    copy_tree "$entry_path" "$path_to_cache" "$MARKER_NAME" "$ENTRY_KEY_NAME"
 
     # Write the v2 marker so future restores with the same key skip.
     printf '%s:%s' "$MARKER_VERSION" "$matched_key" > "${path_to_cache}/${MARKER_NAME}"
@@ -280,12 +278,12 @@ do_restore() {
     printf '::debug::Cache dir: %s\n' "$cache_dir"
     if [ "$is_exact" = "true" ]; then
         printf 'cache-hit=true\n' >> "$GITHUB_OUTPUT"
-        printf '::notice::Cache hit (exact): %s (%s in %ds)\n' "$matched_key" "$size" "$elapsed"
-        append_summary "- **local-cache** \`${matched_key}\` -> Hit (${size}, ${elapsed}s)"
+        printf '::notice::Cache hit (exact): %s (%s in %ds, %s)\n' "$matched_key" "$size" "$elapsed" "$copy_method"
+        append_summary "- **local-cache** \`${matched_key}\` -> Hit (${size}, ${elapsed}s, ${copy_method})"
     else
         printf 'cache-hit=false\n' >> "$GITHUB_OUTPUT"
-        printf '::notice::Cache hit (prefix): %s (%s in %ds)\n' "$matched_key" "$size" "$elapsed"
-        append_summary "- **local-cache** \`${matched_key}\` -> Prefix hit (${size}, ${elapsed}s)"
+        printf '::notice::Cache hit (prefix): %s (%s in %ds, %s)\n' "$matched_key" "$size" "$elapsed" "$copy_method"
+        append_summary "- **local-cache** \`${matched_key}\` -> Prefix hit (${size}, ${elapsed}s, ${copy_method})"
     fi
     printf 'cache-matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
 

@@ -12,7 +12,10 @@ README.md for full context.
   with no warnings.
 - No external dependencies beyond `rsync`, `sh`, and standard POSIX
   utilities. The one published-action dependency is local-mutex, which
-  has its own section below.
+  has its own section below. GNU `cp --reflink` is used only where a
+  probe shows it can clone, never required: `copy_tree` in
+  `lib/cache-common.sh` falls back to `rsync` everywhere else, so a
+  change to either copy path must keep the two building the same tree.
 - The action interface (`action.yml`, `save/action.yml`) must remain
   compatible with `actions/cache` inputs and outputs: `path`, `key`,
   `restore-keys`, `cache-hit`, `cache-matched-key`.
@@ -33,7 +36,7 @@ it.
 
 | Lock | Held by |
 | --- | --- |
-| `cache-save-<key>` | Save, and the restore's full rsync. |
+| `cache-save-<key>` | Save, and the restore's full copy. |
 | `cache-target-<path>` | The restore's quick check - and, nested inside the key lock, its full restore. |
 | `cache-gc` | The gc sweep, store-wide. |
 

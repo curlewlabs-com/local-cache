@@ -36,6 +36,15 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # A third leg runs the whole suite on XFS with reflinks, so every save
+        # and restore below takes the clone path that the ext4 and APFS legs
+        # (rsync) never reach. It is an `include` rather than a matrix axis so
+        # the two original legs keep the job names main's required checks
+        # match on; its distinct `os` label is what makes it a new job instead
+        # of extra keys merged into the ubuntu-latest one.
+        include:
+          - os: ubuntu-24.04
+            fs: xfs-reflink
     runs-on: ${{ matrix.os }}
     env:
       # cache-gc.sh re-invokes itself through local-mutex's CLI to take the same
@@ -53,6 +62,25 @@ jobs:
           repository: curlewlabs-com/local-mutex
           ref: 88393519d9c8488eeea41bbbb810e33a1ac6609a # v2.1.0
           path: .local-mutex
+
+      # Every fixture in this job lives under /tmp - sources, cache dirs,
+      # targets, and local-mutex's default lock dir - so mounting the XFS
+      # filesystem there moves the entire suite onto it. The runner keeps its
+      # own state under $RUNNER_TEMP, so the original /tmp hidden beneath the
+      # mount holds nothing this job needs.
+      - name: Mount an XFS filesystem with reflinks at /tmp
+        if: matrix.fs == 'xfs-reflink'
+        run: |
+          # xfsprogs is not on every hosted image; when missing it comes from
+          # the image's own Ubuntu archive, which moves with the image anyway.
+          command -v mkfs.xfs >/dev/null || { sudo apt-get update && sudo apt-get install -y xfsprogs; }
+          img="$RUNNER_TEMP/xfs.img"
+          truncate -s 2G "$img"
+          mkfs.xfs -q -m reflink=1 "$img"
+          sudo mount -o loop "$img" /tmp
+          sudo chmod 1777 /tmp
+          findmnt /tmp
+          xfs_info /tmp | grep -o 'reflink=[01]'
 
       - name: Restore against non-existent cache dir (cold start)
         id: restore-cold
@@ -524,7 +552,7 @@ jobs:
       # exercise is the re-check inside cache-save.sh that makes the waiter
       # path safe: once the entry exists, a second caller (whether arriving
       # after a lock release or just running later in the same job) must
-      # detect the existing entry and skip the rsync+mv entirely. The
+      # detect the existing entry and skip the copy+mv entirely. The
       # regression this guards is NOT clobbering - it is nesting. POSIX
       # `mv src dest` where dest is an existing directory moves src to
       # dest/basename(src) rather than failing, so a removed re-check would
@@ -624,6 +652,11 @@ jobs:
             || (echo "Expected v2 marker after migration" && exit 1)
           echo "v1 migration: OK"
 
+      # These two are the v1 hard-link regression: a restored file shared the
+      # entry's inode, so an in-place write into one runner's copy rewrote the
+      # cache for everyone. On the XFS leg the restores are reflink clones,
+      # which share data blocks too - these then prove a write copies the
+      # touched blocks instead of reaching the entry or a sibling copy.
       - name: Restore isolation - modifying restored files does not corrupt cache
         run: |
           sh lib/cache-restore.sh /tmp/test-isolation-dst marker-key /tmp/local-cache ""
@@ -659,6 +692,101 @@ jobs:
             || (echo "Modifying A corrupted cache entry" && exit 1)
           echo "Concurrent restore isolation: OK"
 
+      # The engine is chosen by probe, not configured, and a probe that wrongly
+      # fails costs no correctness - only the disk and time clones exist to
+      # save - so nothing but an explicit per-leg expectation would notice. The
+      # XFS leg must clone (and allocate no new data blocks doing it); the ext4
+      # and APFS legs must keep rsync.
+      - name: Save and restore use the copy engine the filesystem supports
+        env:
+          EXPECT_COPY: ${{ matrix.fs == 'xfs-reflink' && 'reflink' || 'rsync' }}
+        run: |
+          mkdir -p /tmp/test-engine-src
+          # 64 MiB, so two full copies would dwarf any metadata growth.
+          head -c 67108864 /dev/urandom > /tmp/test-engine-src/blob
+          sync
+          used_before=$(df -Pk /tmp | awk 'NR==2 {print $3}')
+          save_out=$(sh lib/cache-save.sh /tmp/test-engine-src engine-key /tmp/local-cache)
+          restore_out=$(sh lib/cache-restore.sh /tmp/test-engine-dst engine-key /tmp/local-cache "")
+          sync
+          used_after=$(df -Pk /tmp | awk 'NR==2 {print $3}')
+          printf '%s\n%s\n' "$save_out" "$restore_out"
+          case "$save_out" in
+            *", ${EXPECT_COPY})"*) ;;
+            *) echo "Expected save to use ${EXPECT_COPY}"; exit 1 ;;
+          esac
+          case "$restore_out" in
+            *", ${EXPECT_COPY})"*) ;;
+            *) echo "Expected restore to use ${EXPECT_COPY}"; exit 1 ;;
+          esac
+          cmp /tmp/test-engine-src/blob /tmp/test-engine-dst/blob
+          grown_kib=$((used_after - used_before))
+          echo "Filesystem grew ${grown_kib} KiB across the save and restore"
+          # Only the XFS leg asserts on growth: it is a private filesystem, while
+          # the other legs share /tmp with whatever else the runner writes.
+          if [ "$EXPECT_COPY" = reflink ] && [ "$grown_kib" -gt 16384 ]; then
+            echo "Clones allocated new data blocks: grew ${grown_kib} KiB"
+            exit 1
+          fi
+          echo "Copy engine (${EXPECT_COPY}): OK"
+
+      # Both engines must hand a consumer the same tree, so this runs the same
+      # assertions on every leg: rsync on ext4 and APFS, the clone path on XFS.
+      # Each is something rsync -a does that a plain `cp -a` would not, or the
+      # clone path's emulation of --exclude: symlinks stay links, modes and
+      # mtimes survive, hard links are NOT preserved (rsync -a has no -H), the
+      # restore marker is dropped at any depth, and the engine's own probe
+      # files never land in an entry or a target.
+      - name: Saved and restored trees match what rsync -a builds
+        run: |
+          src=/tmp/test-tree-src
+          dst=/tmp/test-tree-dst
+          mkdir -p "$src/sub/nested"
+          printf 'data\n' > "$src/data.txt"
+          printf '#!/bin/sh\n' > "$src/tool.sh"
+          chmod 755 "$src/tool.sh"
+          printf 'dot\n' > "$src/.dotfile"
+          ln -s ../data.txt "$src/sub/link"
+          ln "$src/data.txt" "$src/sub/hardlink"
+          printf 'v2:other-key\n' > "$src/sub/nested/.local-cache-restore"
+          touch -t 202001020304 "$src/data.txt" /tmp/test-tree-ref
+          sh lib/cache-save.sh "$src" tree-key /tmp/local-cache
+          sh lib/cache-restore.sh "$dst" tree-key /tmp/local-cache ""
+          . lib/cache-common.sh
+          entry="/tmp/local-cache/entries/$(encode_key 'tree-key')"
+
+          [ -L "$dst/sub/link" ] && [ "$(readlink "$dst/sub/link")" = ../data.txt ] \
+            || { echo "Symlink was not restored as a symlink"; exit 1; }
+          [ -x "$dst/tool.sh" ] || { echo "Executable bit lost"; exit 1; }
+          [ "$(cat "$dst/.dotfile")" = dot ] || { echo "Dotfile missing"; exit 1; }
+          if [ "$dst/data.txt" -nt /tmp/test-tree-ref ] || [ "$dst/data.txt" -ot /tmp/test-tree-ref ]; then
+            echo "File mtime was not preserved"; exit 1
+          fi
+          [ ! "$dst/data.txt" -ef "$dst/sub/hardlink" ] \
+            || { echo "Hard link was preserved; rsync -a splits it"; exit 1; }
+          [ "$(cat "$dst/sub/hardlink")" = data ] || { echo "Hard-linked file content wrong"; exit 1; }
+          [ ! -e "$entry/sub/nested/.local-cache-restore" ] \
+            || { echo "Nested restore marker was saved into the entry"; exit 1; }
+          [ ! -e "$dst/.local-cache-key" ] || { echo "Entry metadata leaked into the target"; exit 1; }
+          [ -z "$(find "$entry" "$dst" -name '.local-cache-reflink-probe.*')" ] \
+            || { echo "Reflink probe files were left behind"; exit 1; }
+          echo "Tree parity: OK"
+
+      # A clone needs the store and the target on one filesystem. On the XFS
+      # leg $RUNNER_TEMP is still on the runner's ext4 root, so a restore there
+      # crosses filesystems and must fall back to rsync.
+      - name: A target on another filesystem than the store falls back to rsync
+        if: matrix.fs == 'xfs-reflink'
+        run: |
+          out=$(sh lib/cache-restore.sh "$RUNNER_TEMP/cross-fs-dst" engine-key /tmp/local-cache "")
+          printf '%s\n' "$out"
+          case "$out" in
+            *", rsync)"*) ;;
+            *) echo "Expected a cross-filesystem restore to use rsync"; exit 1 ;;
+          esac
+          cmp /tmp/test-engine-src/blob "$RUNNER_TEMP/cross-fs-dst/blob"
+          echo "Cross-filesystem fallback: OK"
+
       # A second prefix restore against an already-populated target must hit
       # the marker-skip branch in cache-restore.sh (is_current on the
       # is_exact="false" path). Existing tests cover exact-hit-skip and
@@ -666,7 +794,7 @@ jobs:
       # which is the steady-state behavior for the README's restore -> install
       # -> save pattern when the caller's exact key is slightly newer than the
       # fallback. If this branch regresses, the restore silently starts doing
-      # full rsync work on every invocation instead of constant-time work.
+      # a full copy on every invocation instead of constant-time work.
       - name: Second prefix restore against populated target is a marker-skip
         run: |
           mkdir -p /tmp/test-prefix-marker-src
@@ -682,7 +810,7 @@ jobs:
             || (echo "Expected marker 'v2:prefix-marker-v1' after first prefix restore, got '$marker'" && exit 1)
 
           # Modify the restored content - if the second restore skips via
-          # marker-match, this modification survives (no rsync overwrite).
+          # marker-match, this modification survives (no re-copy).
           # Same pattern as the "Second restore with same key is skipped" test,
           # but on the prefix-resolution branch.
           echo "modified-between-restores" > /tmp/test-prefix-marker-dst/data.txt
@@ -719,7 +847,7 @@ jobs:
           [ -d "/tmp/local-cache/entries/${encoded_key}" ] \
             || (echo "Expected new entry save-exclude-v2" && exit 1)
           [ ! -f "/tmp/local-cache/entries/${encoded_key}/.local-cache-restore" ] \
-            || (echo "rsync did not exclude marker - new entry contains stale marker from prefix source" && exit 1)
+            || (echo "save did not exclude marker - new entry contains stale marker from prefix source" && exit 1)
           [ -f "/tmp/local-cache/entries/${encoded_key}/.local-cache-key" ] \
             || { echo "Expected metadata file in encoded entry"; exit 1; }
           [ -f "/tmp/local-cache/entries/${encoded_key}/data.txt" ] \
@@ -766,7 +894,7 @@ jobs:
           out=$(mktemp)
           GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --check /tmp/two-phase-dst-cold-prefix phase-v2 /tmp/local-cache-2 "phase-"
           
-          # 3. Verify skip-lock is NOT emitted (rsync is required)
+          # 3. Verify skip-lock is NOT emitted (a full copy is required)
           if grep "skip-lock=true" "$out"; then
             echo "Expected no skip-lock for cold prefix hit" && exit 1
           fi
@@ -868,7 +996,7 @@ jobs:
           [ "$(stat_mtime "${entry}")" = "$dir_before" ] \
             || (echo "skip-path restore moved entry dir mtime - corrupts prefix selection order" && exit 1)
 
-          # Full-rsync path (fresh target) also stamps last-use time.
+          # Full-copy path (fresh target) also stamps last-use time.
           touch -t 202001010000 "${entry}/.local-cache-key"
           meta_before=$(stat_mtime "${entry}/.local-cache-key")
           sh lib/cache-restore.sh /tmp/test-lru-dst-fresh lru-key /tmp/local-cache ""
@@ -1091,7 +1219,7 @@ jobs:
       # (prefix) hit the served entry's stored key differs from the requested key;
       # Phase 1 resolves and emits that stored key as matched-key, and Phase 2
       # locks cache-save-<matched-key>. Locking the requested key instead would
-      # leave the rsync SOURCE unprotected and let gc rm it mid-copy. Assert the
+      # leave the copy's SOURCE unprotected and let gc rm it mid-copy. Assert the
       # resolved lock key is the entry's stored key - the same string gc locks on.
       - name: Restore locks on the matched entry key, not the requested key
         run: |

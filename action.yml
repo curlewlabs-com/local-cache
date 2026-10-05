@@ -96,9 +96,9 @@ runs:
     # is empty). Takes the per-KEY lock on the MATCHED entry's own key - not the
     # requested key - so it is the very lock gc takes to evict that entry: on a
     # restore-keys (prefix) hit the served entry's stored key differs from the
-    # requested key, and locking the requested key would leave the rsync SOURCE
+    # requested key, and locking the requested key would leave the copy's SOURCE
     # unprotected against a concurrent eviction. Nested inside it is the
-    # per-TARGET lock (protects the target as the rsync DEST against gc reclaim).
+    # per-TARGET lock (protects the target as the copy's DEST against gc reclaim).
     # The nest order is key -> target - the same order gc acquires them - so a
     # restore and a sweep can never deadlock. cache-restore.sh restores the exact
     # entry Phase 1 resolved (--restore <matched-name>), never re-resolving to a
