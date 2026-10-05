@@ -23,8 +23,10 @@ TARGETS_DIR_NAME="targets"
 # restore or reclaims a copy. <matched-key> is the value the action emits as
 # cache-matched-key - the entry's raw key. Bumped only on a backward-
 # incompatible change to the marker or entry layout (v1 used hard links; v2
-# uses full rsync copies). Referenced by literal in .github/workflows/ci.yml
-# marker tests - keep those literals in sync if you bump this.
+# uses independent copies - rsync, or reflink clones, which build the same
+# tree, so either may read what the other wrote). Referenced by literal in
+# .github/workflows/ci.yml marker tests - keep those literals in sync if you
+# bump this.
 # shellcheck disable=SC2034
 MARKER_VERSION="v2"
 
@@ -50,6 +52,68 @@ encode_key() {
 append_summary() {
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
+    fi
+}
+
+# Return 0 (true) if files can be cloned (reflinked) from SRC_DIR into DEST_DIR,
+# an existing directory this process may write to. That needs cp with
+# --reflink (GNU coreutils), both directories on one filesystem, and a
+# filesystem that shares extents between files. Support depends on mkfs
+# options (XFS without reflink=1 cannot) and the kernel, not on the filesystem
+# type alone, so this clones a real probe file rather than matching on type.
+# The probe is written into DEST_DIR, never the source: a restore's source is
+# a store entry, which may be read-only and whose directory mtime orders
+# prefix matches.
+can_reflink() {
+    cr_src_dev=$(stat -c %d -- "$1" 2>/dev/null) || return 1
+    cr_dest_dev=$(stat -c %d -- "$2" 2>/dev/null) || return 1
+    [ -n "$cr_src_dev" ] && [ "$cr_src_dev" = "$cr_dest_dev" ] || return 1
+    cr_probe="$2/.local-cache-reflink-probe.$$"
+    printf 'local-cache reflink probe\n' > "${cr_probe}.src" 2>/dev/null || return 1
+    cr_rc=0
+    cp --reflink=always -- "${cr_probe}.src" "${cr_probe}.dst" 2>/dev/null || cr_rc=1
+    rm -f -- "${cr_probe}.src" "${cr_probe}.dst"
+    return "$cr_rc"
+}
+
+# Copy the contents of SRC_DIR into the existing directory DEST_DIR, leaving
+# out every file or directory, at any depth, named by the remaining arguments
+# (rsync's unanchored --exclude). Sets copy_method to the engine used, for the
+# caller's log line.
+#
+# Where can_reflink holds, the copy is a clone: DEST shares SRC's data blocks
+# until either side writes, so it costs neither the time nor the disk of a
+# full copy. Each clone is still its own inode, so a write into a restored
+# file never reaches the entry or another runner's copy - the isolation that
+# hard links (v1) broke. Everywhere else, rsync -a, unchanged.
+#
+# The clone path builds the tree rsync would: cp -p keeps mode (plus any ACLs,
+# which rsync -a drops), timestamps, and ownership where permitted; -P copies
+# symlinks as symlinks; and neither engine preserves hard links between files.
+# cp has no --exclude, so the excluded names are deleted after the copy; the
+# one difference that leaves is that a subdirectory an excluded name was
+# deleted from gets a fresh mtime where rsync would carry the source's.
+# --reflink=auto rather than =always: the probe proved the filesystem clones,
+# but a single file can still refuse (Btrfs nodatacow), and that file should
+# be copied rather than fail the whole restore.
+copy_tree() {
+    ct_src="$1"
+    ct_dest="$2"
+    shift 2
+    if can_reflink "$ct_src" "$ct_dest"; then
+        copy_method="reflink"
+        cp -R -P -p --reflink=auto -- "${ct_src}/." "${ct_dest}/"
+        for ct_name in "$@"; do
+            find "$ct_dest" -mindepth 1 -name "$ct_name" -prune -exec rm -rf -- {} +
+        done
+    else
+        copy_method="rsync"
+        # Rewrite the name list in place as --exclude flags.
+        for ct_name in "$@"; do
+            set -- "$@" "--exclude=${ct_name}"
+            shift
+        done
+        rsync -a "$@" "${ct_src}/" "${ct_dest}/"
     fi
 }
 

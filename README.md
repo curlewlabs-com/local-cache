@@ -45,8 +45,14 @@ that initial population, no runner ever downloads again.
   a Windows host, and it gets a real POSIX filesystem, `rsync`, and `flock`.
   BSDs that ship `lockf(1)` should work too, but CI covers Linux and macOS
   only.
-- **`rsync` on `PATH`.** It is the copy engine for every restore and save.
-  Preinstalled on macOS; packaged as `rsync` on every Linux distribution.
+- **`rsync` on `PATH`.** It is the copy engine for every restore and save
+  that cannot be a [copy-on-write clone](#copy-on-write-clones-reflinks) - on
+  macOS, on ext4, and anywhere else without reflinks. Preinstalled on macOS;
+  packaged as `rsync` on every Linux distribution.
+- **Optional: GNU `cp` with `--reflink`** (coreutils, standard on Linux
+  distributions). Where the filesystem supports reflinks it turns restores and
+  saves into [copy-on-write clones](#copy-on-write-clones-reflinks); without it,
+  everything runs on `rsync`.
 - **A SHA-256 command on `PATH`:** `sha256sum` (Linux `coreutils`) or `shasum`
   (macOS, Perl core). Everything else the scripts call - `sh`, `find`, `du`,
   `stat`, `mktemp`, `ls`, `mv`, `rm` and the rest - is base POSIX userland,
@@ -61,21 +67,24 @@ that initial population, no runner ever downloads again.
 
 **Windows runners are not supported**, and two things block it independently.
 The composite steps declare `shell: sh`, which GitHub Actions offers on Linux
-and macOS only. And `rsync` - the copy engine for every restore and save -
-ships with neither Windows nor Git for Windows; it has to be hand-installed
-from the MSYS2 repository. Supporting Windows properly would take a native lock
-primitive in `local-mutex` (`LockFileEx`) and a second copy engine here
-(`robocopy`), plus care around path spellings, atomic directory renames, and
-virus scanners holding file handles open. Run the runner inside WSL2 instead.
+and macOS only. And `rsync` - the copy engine wherever a restore or save cannot
+clone - ships with neither Windows nor Git for Windows; it has to be
+hand-installed from the MSYS2 repository. Supporting Windows properly would take
+a native lock primitive in `local-mutex` (`LockFileEx`) and a Windows copy
+engine here (`robocopy`), plus care around path spellings, atomic directory
+renames, and virus scanners holding file handles open. Run the runner inside
+WSL2 instead.
 
 ## How it works
 
 Cache entries are stored as plain directories under
 `cache-dir/entries/k-<sha256>/`. The directory name is a SHA-256 hash of the
 caller's raw key (fixed-length, collision-free), and each entry also stores the
-original key in a small metadata file. On restore, `rsync -a` copies the entry
-contents to the target path. A marker file (`.local-cache-restore`) in the
-target records which key was last restored:
+original key in a small metadata file. On restore, the entry's contents are
+copied to the target path - cloned where the filesystem supports reflinks,
+`rsync -a` otherwise (see
+[Copy-on-write clones](#copy-on-write-clones-reflinks)). A marker file
+(`.local-cache-restore`) in the target records which key was last restored:
 
 - **Marker matches the matched entry** -> restore is skipped entirely
   (constant-time work). For prefix matches, "matched entry" is the resolved
@@ -95,11 +104,11 @@ which takes the per-*key* lock on **that entry's own key** - the requested key
 for an exact hit, the resolved entry's stored key for a prefix hit - shared
 with the save step via
 [`curlewlabs-com/local-mutex`](https://github.com/curlewlabs-com/local-mutex).
-Nested inside it is that same per-target lock; it then rsyncs the resolved
+Nested inside it is that same per-target lock; it then copies the resolved
 entry. Locking the entry's own key rather than merely the requested one matters
 because it is the exact lock the [`gc`](#the-gc-action) takes to evict that
 entry: on a prefix hit the two keys differ, and locking the requested key would
-leave the rsync *source* exposed to a concurrent eviction. Phase 2 restores
+leave the copy's *source* exposed to a concurrent eviction. Phase 2 restores
 exactly the entry Phase 1 resolved - never re-resolving to a different,
 unlocked one - and misses cleanly if the gc evicted it in the interval. The
 per-target lock is what lets the gc reclaim a restore target without racing a
@@ -129,16 +138,9 @@ survives.
 This is unsafe when multiple runners restore the same entry concurrently: hard
 links share the same inode, so if one consumer modifies a file (e.g. `flutter`
 upgrading `engine.version` during setup), the modification corrupts the cache
-entry for every other consumer.
-
-**Why not copy-on-write (APFS clones, reflinks)?** CoW semantics are not
-portable: `cp -c` is macOS-only (APFS), `cp --reflink` is Linux-only
-(Btrfs/XFS, not ext4), and edge-case behavior (failure modes, metadata
-preservation on fallback) varies across OS versions. We optimize for easy to
-understand over minimal: one tool (`rsync`), one behavior, no platform
-detection. The marker-based skip also makes CoW redundant for the common case -
-steady-state restores are constant-time work, and version bumps (the only case
-CoW would help) are rare and take seconds.
+entry for every other consumer. Reflinks give the same zero-copy restore
+without the shared inode - see
+[Copy-on-write clones](#copy-on-write-clones-reflinks).
 
 **Last-use tracking (for eviction):** Every restore that serves an entry -
 including the constant-time marker-skip path - updates the modification time of
@@ -147,6 +149,44 @@ accurate *last-used* timestamp, distinct from the entry directory's own mtime
 (which records the last *write* and is what prefix matching sorts on). Nothing
 here evicts anything on its own; it makes a least-recently-used sweep possible
 and safe - see [Eviction](#eviction).
+
+### Copy-on-write clones (reflinks)
+
+Where the filesystem supports reflinks, a restore clones the entry's files
+instead of copying them, and a save clones the source into the store. A clone
+shares the original's data blocks, so it is fast and takes no extra space for
+file data until one side writes. On a machine with several runners, that removes
+the separate copy each runner would otherwise keep of every cached tool.
+
+Clones are not hard links. Each clone is its own file with its own inode, and a
+write into a restored file copies only the blocks it touches, so the entry and
+every other runner's copy stay as they were - the isolation that v1's hard
+links broke. CI runs the same isolation tests against both copy paths.
+
+There is nothing to configure. Before each copy, local-cache clones a small
+probe file into the destination, and uses GNU `cp --reflink` only when that
+succeeds and the source and destination are on one filesystem; otherwise it
+uses `rsync -a`. In practice that means clones on Linux when the `cache-dir`
+and the restore target share a filesystem with reflink support - XFS created
+with it enabled (`mkfs.xfs -m reflink=1`), Btrfs, or another that implements
+Linux's `FICLONE` - and `rsync` on ext4, tmpfs, or when the target is on a
+different filesystem from the store. It probes rather than checking the
+filesystem type because support depends on how the filesystem was created and
+on the kernel, not on the type alone. The stock macOS `cp` has no `--reflink`,
+so macOS runners keep `rsync`; a runner with GNU coreutils first on `PATH`
+passes the probe and clones on APFS.
+
+Both paths build the same tree: modes, timestamps, and symlinks are kept, hard
+links between files are not (as with `rsync -a`), and local-cache's own
+bookkeeping files are left out at any depth. The one difference is that the
+clone path removes those files after copying, so a subdirectory that held one
+gets a fresh mtime. The entry layout and the marker format are the same for
+both, so entries and targets written by either path are interchangeable, and
+runners on older releases of this action can share a store with newer ones.
+
+On a store that clones, the size the [`gc` action](#the-gc-action) reports for
+each entry and target is its logical size. An entry and its targets share
+blocks, so the space a sweep frees is less than the sum of the sizes it reports.
 
 ## Usage
 
@@ -186,7 +226,8 @@ when the cache actually missed.
 
 On first run: cache miss -> install runs -> save populates the shared cache. On
 subsequent runs (same key): marker matches -> restore skipped -> instant. On
-version bump: marker differs -> clean + rsync -> a few seconds.
+version bump: marker differs -> clean + copy -> a few seconds, or a clone where
+the filesystem supports reflinks.
 
 ### Eliminating the three-step pattern
 
@@ -351,7 +392,7 @@ That makes a least-recently-used sweep safe to run on a schedule:
 ```sh
 # Remove entries not used in the last 30 days.
 # Whole-entry granularity is deliberate: deleting individual files from
-# inside a live entry would mutate the rsync source of an in-flight restore
+# inside a live entry would mutate the copy source of an in-flight restore
 # and corrupt it. Only ever remove an entry directory as a unit.
 for meta in /path/to/cache-dir/entries/*/.local-cache-key; do
     [ -e "$meta" ] || continue
@@ -372,7 +413,7 @@ both, under the save/restore locks.
 ### The `gc` action
 
 `curlewlabs-com/local-cache/gc@v3` runs that sweep for you, and additionally
-reclaims the **restore targets** - the per-runner copies an entry was rsynced
+reclaims the **restore targets** - the per-runner copies an entry was restored
 *to* on each cache hit, which accumulate separately from the store. Every
 served restore records its target in a parallel `targets/<encoded-key>/` tree
 (a sibling of `entries/`, kept out of the entry so it can't disturb
@@ -408,7 +449,7 @@ is a hard *floor*. That floor is the minimum, not the target, though:
 `max-age-days` is a retention policy, sized to your disk budget and how fast
 your keys roll (days to weeks; the default is 30), and it sits far above a
 longest job measured in minutes or hours. Size that window for the job's
-*total* runtime, reads included: `rsync -a` preserves the cache's original
+*total* runtime, reads included: a restore preserves the cache's original
 mtimes and a skip rewrites nothing, so the mtime backstop only ever sees
 *writes into* a target, never a job merely reading one. And since the locks
 live in one shared directory (`/tmp` by default), every runner sharing the
@@ -426,7 +467,7 @@ runners and the gc could delete a target another runner is restoring.
   and restore steps hold, or the entry-only shell recipe above - can reclaim
   space safely. See [Eviction](#eviction). For a full reset,
   `rm -rf cache-dir/entries/* cache-dir/targets/*`.
-- **SIGKILL/OOM can orphan staging directories.** The save step rsyncs into a
+- **SIGKILL/OOM can orphan staging directories.** The save step copies into a
   `.tmp-<key>-<pid>` staging directory under `entries/` and then renames it
   into place atomically. A normal exit, `INT`, or `TERM` cleans the staging
   directory up via trap, but `SIGKILL` / OOM kill / power loss between `mkdir`
@@ -435,10 +476,13 @@ runners and the gc could delete a target another runner is restoring.
   ghost cache hits - but they do consume disk space. If you notice `entries/`
   growing unexpectedly, sweep them with `rm -rf cache-dir/entries/.tmp-*`
   during a maintenance window.
-- **Each restore is a full copy.** When the marker doesn't match (version bump,
-  first v2 restore), the full artifact is copied from cache to target. For a
-  1.8 GB Flutter SDK this takes a few seconds on SSD - trivial compared to the
-  network download it replaces.
+- **Without reflinks, each restore is a full copy.** When the marker doesn't
+  match (version bump, first v2 restore), the full artifact is copied from
+  cache to target. For a 1.8 GB Flutter SDK this takes a few seconds on SSD -
+  trivial compared to the network download it replaces - but every runner's
+  target holds its own copy on disk. Where the filesystem supports reflinks the
+  restore is a clone instead, and the copies share the entry's blocks (see
+  [Copy-on-write clones](#copy-on-write-clones-reflinks)).
 - **macOS Spotlight indexing.** On macOS runners, restoring large cache entries
   (e.g. the Flutter SDK) can trigger `mds` / `mds_stores` to re-index the
   restored files, causing CPU spikes. Exclude the runner's root directory (or
