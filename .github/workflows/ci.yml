@@ -755,8 +755,9 @@ jobs:
           . lib/cache-common.sh
           entry="/tmp/local-cache/entries/$(encode_key 'tree-key')"
 
-          [ -L "$dst/sub/link" ] && [ "$(readlink "$dst/sub/link")" = ../data.txt ] \
-            || { echo "Symlink was not restored as a symlink"; exit 1; }
+          if [ ! -L "$dst/sub/link" ] || [ "$(readlink "$dst/sub/link")" != ../data.txt ]; then
+            echo "Symlink was not restored as a symlink"; exit 1
+          fi
           [ -x "$dst/tool.sh" ] || { echo "Executable bit lost"; exit 1; }
           [ "$(cat "$dst/.dotfile")" = dot ] || { echo "Dotfile missing"; exit 1; }
           if [ "$dst/data.txt" -nt /tmp/test-tree-ref ] || [ "$dst/data.txt" -ot /tmp/test-tree-ref ]; then
