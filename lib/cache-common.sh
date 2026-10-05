@@ -55,8 +55,8 @@ append_summary() {
     fi
 }
 
-# Return 0 (true) if files can be cloned (reflinked) from SRC_DIR into DEST_DIR,
-# an existing directory this process may write to. That needs cp with
+# Return 0 (true) if GNU cp can clone (reflink) files from SRC_DIR into
+# DEST_DIR, an existing directory this process may write to. That needs cp with
 # --reflink (GNU coreutils), both directories on one filesystem, and a
 # filesystem that shares extents between files. Support depends on mkfs
 # options (XFS without reflink=1 cannot) and the kernel, not on the filesystem
@@ -64,7 +64,7 @@ append_summary() {
 # The probe is written into DEST_DIR, never the source: a restore's source is
 # a store entry, which may be read-only and whose directory mtime orders
 # prefix matches.
-can_reflink() {
+gnu_can_reflink() {
     cr_src_dev=$(stat -c %d -- "$1" 2>/dev/null) || return 1
     cr_dest_dev=$(stat -c %d -- "$2" 2>/dev/null) || return 1
     [ -n "$cr_src_dev" ] && [ "$cr_src_dev" = "$cr_dest_dev" ] || return 1
@@ -76,36 +76,58 @@ can_reflink() {
     return "$cr_rc"
 }
 
+# Return 0 (true) if SRC_DIR and DEST_DIR are on one APFS volume, where macOS
+# cp -c clones every file with clonefile(2). A probe cannot answer this one:
+# unlike GNU --reflink=always, cp -c falls back to an ordinary copy when it
+# cannot clone and still exits 0, so this reads the volume's type from mount
+# instead. Same device, not just APFS, because a clone between two APFS
+# volumes - even in one container - is a copy. (macOS reports its read-only
+# system volume under the data volume's device, so a save FROM the system
+# volume is labeled a clone but copied; nothing local-cache writes lands
+# there, so the label is the only casualty.) The tools are named by absolute
+# path because a runner with GNU coreutils first on PATH has a cp without -c
+# and a stat whose -f means something else.
+apfs_can_clone() {
+    [ "$(uname -s)" = Darwin ] || return 1
+    ac_src_dev=$(/usr/bin/stat -f %d "$1" 2>/dev/null) || return 1
+    ac_dest=$(/usr/bin/stat -f '%d %Sd' "$2" 2>/dev/null) || return 1
+    [ -n "$ac_src_dev" ] && [ "$ac_src_dev" = "${ac_dest%% *}" ] || return 1
+    /sbin/mount | awk -v disk="/dev/${ac_dest#* }" \
+        '$1 == disk && /\(apfs[,)]/ { found = 1 } END { exit !found }'
+}
+
 # Copy the contents of SRC_DIR into the existing directory DEST_DIR, leaving
 # out every file or directory, at any depth, named by the remaining arguments
 # (rsync's unanchored --exclude). Sets copy_method to the engine used, for the
 # caller's log line.
 #
-# Where can_reflink holds, the copy is a clone: DEST shares SRC's data blocks
-# until either side writes, so it costs neither the time nor the disk of a
-# full copy. Each clone is still its own inode, so a write into a restored
-# file never reaches the entry or another runner's copy - the isolation that
-# hard links (v1) broke. Everywhere else, rsync -a, unchanged.
+# Where the filesystem can clone - GNU cp --reflink on Linux, cp -c on an APFS
+# volume - the copy is a clone: DEST shares SRC's data blocks until either side
+# writes, so it costs neither the time nor the disk of a full copy. Each clone
+# is still its own inode, so a write into a restored file never reaches the
+# entry or another runner's copy - the isolation that hard links (v1) broke.
+# Everywhere else, rsync -a, unchanged.
 #
-# The clone path builds the tree rsync would: cp -p keeps mode (plus any ACLs,
-# which rsync -a drops), timestamps, and ownership where permitted; -P copies
-# symlinks as symlinks; and neither engine preserves hard links between files.
-# cp has no --exclude, so the excluded names are deleted after the copy; the
-# one difference that leaves is that a subdirectory an excluded name was
-# deleted from gets a fresh mtime where rsync would carry the source's.
-# --reflink=auto rather than =always: the probe proved the filesystem clones,
-# but a single file can still refuse (Btrfs nodatacow), and that file should
-# be copied rather than fail the whole restore.
+# The clone paths build the tree rsync would: cp -p keeps mode, timestamps, and
+# ownership where permitted; -P copies symlinks as symlinks; and no engine
+# preserves hard links between files. They also keep what rsync -a drops: ACLs,
+# and on macOS extended attributes and file flags, which clonefile(2) carries
+# with the data. cp has no --exclude, so the excluded names are deleted after
+# the copy, and a subdirectory one was deleted from gets a fresh mtime where
+# rsync would carry the source's. --reflink=auto rather than =always: the probe
+# proved the filesystem clones, but a single file can still refuse (Btrfs
+# nodatacow), and that file should be copied rather than fail the whole
+# restore; cp -c falls back the same way on its own.
 copy_tree() {
     ct_src="$1"
     ct_dest="$2"
     shift 2
-    if can_reflink "$ct_src" "$ct_dest"; then
+    if gnu_can_reflink "$ct_src" "$ct_dest"; then
         copy_method="reflink"
         cp -R -P -p --reflink=auto -- "${ct_src}/." "${ct_dest}/"
-        for ct_name in "$@"; do
-            find "$ct_dest" -mindepth 1 -name "$ct_name" -prune -exec rm -rf -- {} +
-        done
+    elif apfs_can_clone "$ct_src" "$ct_dest"; then
+        copy_method="reflink"
+        /bin/cp -c -R -P -p -- "${ct_src}/." "${ct_dest}/"
     else
         copy_method="rsync"
         # Rewrite the name list in place as --exclude flags.
@@ -114,7 +136,11 @@ copy_tree() {
             shift
         done
         rsync -a "$@" "${ct_src}/" "${ct_dest}/"
+        return
     fi
+    for ct_name in "$@"; do
+        find "$ct_dest" -mindepth 1 -name "$ct_name" -prune -exec rm -rf -- {} +
+    done
 }
 
 # Canonicalize a target path LEXICALLY (no symlink or ".." resolution - that

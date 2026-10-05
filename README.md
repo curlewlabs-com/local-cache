@@ -47,12 +47,11 @@ that initial population, no runner ever downloads again.
   only.
 - **`rsync` on `PATH`.** It is the copy engine for every restore and save
   that cannot be a [copy-on-write clone](#copy-on-write-clones-reflinks) - on
-  macOS, on ext4, and anywhere else without reflinks. Preinstalled on macOS;
+  ext4, HFS+, and anywhere else without reflinks. Preinstalled on macOS;
   packaged as `rsync` on every Linux distribution.
-- **Optional: GNU `cp` with `--reflink`** (coreutils, standard on Linux
-  distributions). Where the filesystem supports reflinks it turns restores and
-  saves into [copy-on-write clones](#copy-on-write-clones-reflinks); without it,
-  everything runs on `rsync`.
+- **For clones on Linux, GNU `cp` with `--reflink`** (coreutils, standard on
+  Linux distributions). On macOS the built-in `cp -c` clones on APFS, so
+  nothing extra is needed. Without either, everything runs on `rsync`.
 - **A SHA-256 command on `PATH`:** `sha256sum` (Linux `coreutils`) or `shasum`
   (macOS, Perl core). Everything else the scripts call - `sh`, `find`, `du`,
   `stat`, `mktemp`, `ls`, `mv`, `rm` and the rest - is base POSIX userland,
@@ -161,28 +160,36 @@ the separate copy each runner would otherwise keep of every cached tool.
 Clones are not hard links. Each clone is its own file with its own inode, and a
 write into a restored file copies only the blocks it touches, so the entry and
 every other runner's copy stay as they were - the isolation that v1's hard
-links broke. CI runs the same isolation tests against both copy paths.
+links broke. CI runs the same isolation tests against every copy path.
 
-There is nothing to configure. Before each copy, local-cache clones a small
-probe file into the destination, and uses GNU `cp --reflink` only when that
-succeeds and the source and destination are on one filesystem; otherwise it
-uses `rsync -a`. In practice that means clones on Linux when the `cache-dir`
-and the restore target share a filesystem with reflink support - XFS created
-with it enabled (`mkfs.xfs -m reflink=1`), Btrfs, or another that implements
-Linux's `FICLONE` - and `rsync` on ext4, tmpfs, or when the target is on a
-different filesystem from the store. It probes rather than checking the
-filesystem type because support depends on how the filesystem was created and
-on the kernel, not on the type alone. The stock macOS `cp` has no `--reflink`,
-so macOS runners keep `rsync`; a runner with GNU coreutils first on `PATH`
-passes the probe and clones on APFS.
+There is nothing to configure: before each copy, local-cache works out whether
+the source and destination can clone, and uses `rsync -a` when they cannot.
 
-Both paths build the same tree: modes, timestamps, and symlinks are kept, hard
-links between files are not (as with `rsync -a`), and local-cache's own
-bookkeeping files are left out at any depth. The one difference is that the
-clone path removes those files after copying, so a subdirectory that held one
-gets a fresh mtime. The entry layout and the marker format are the same for
-both, so entries and targets written by either path are interchangeable, and
-runners on older releases of this action can share a store with newer ones.
+- **Linux:** it clones a small probe file into the destination and uses GNU
+  `cp --reflink` only when that succeeds and the source and destination are on
+  one filesystem. That means clones on a filesystem with reflink support - XFS
+  created with it enabled (`mkfs.xfs -m reflink=1`), Btrfs, or another that
+  implements Linux's `FICLONE` - and `rsync` on ext4, tmpfs, or when the
+  target is on a different filesystem from the store. It probes rather than
+  checking the filesystem type because support depends on how the filesystem
+  was created and on the kernel, not on the type alone.
+- **macOS:** it uses the built-in `cp -c` (`clonefile(2)`) when the source and
+  destination are on one APFS volume - the normal case, since the runner's
+  disk is APFS - and `rsync` on HFS+ or when they are on different volumes.
+  Here it checks the volume type instead of probing, because `cp -c` quietly
+  makes an ordinary copy when it cannot clone, so a probe would pass on any
+  filesystem.
+
+The clone paths build the tree `rsync -a` does: modes, timestamps, and symlinks
+are kept, hard links between files are not, and local-cache's own bookkeeping
+files are left out at any depth. Two differences remain. The clone paths remove
+those bookkeeping files after copying, so a subdirectory that held one gets a
+fresh mtime. And they keep metadata `rsync -a` drops: ACLs, and on macOS also
+extended attributes and file flags, which `clonefile(2)` carries with the data -
+so a restored copy matches the saved tree more closely than an rsync copy does.
+The entry layout and the marker format are the same on every path, so entries
+and targets written by any of them are interchangeable, and runners on older
+releases of this action can share a store with newer ones.
 
 On a store that clones, the size the [`gc` action](#the-gc-action) reports for
 each entry and target is its logical size. An entry and its targets share

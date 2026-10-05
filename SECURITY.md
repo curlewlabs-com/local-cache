@@ -11,8 +11,9 @@ Do not open a public issue for security vulnerabilities.
 ## Scope
 
 This action reads and writes cache entries on the runner's local filesystem
-using `rsync` (or GNU `cp --reflink`, where the filesystem supports clones) and
-standard POSIX utilities. The primary security surface is:
+using `rsync` (or, where the filesystem supports clones, GNU `cp --reflink` on
+Linux and `cp -c` on macOS) and standard POSIX utilities. The primary security
+surface is:
 
 - **Key-to-path mapping:** The `key` and `restore-keys` inputs are hashed
   (SHA-256) into fixed-length directory names before they are used on disk.
