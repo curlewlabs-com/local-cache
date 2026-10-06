@@ -16,7 +16,8 @@ README.md for full context.
   built-in `cp -c` (macOS, APFS) are used only where `copy_tree` in
   `lib/cache-common.sh` finds the filesystem can clone, never required:
   it falls back to `rsync` everywhere else, so a change to any copy path
-  must keep them all building the same tree.
+  must keep them all building the same tree. Clones are restore-only;
+  saves always `rsync`, for the reasons at that line of `lib/cache-save.sh`.
 - The action interface (`action.yml`, `save/action.yml`) must remain
   compatible with `actions/cache` inputs and outputs: `path`, `key`,
   `restore-keys`, `cache-hit`, `cache-matched-key`.

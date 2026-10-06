@@ -45,9 +45,9 @@ that initial population, no runner ever downloads again.
   a Windows host, and it gets a real POSIX filesystem, `rsync`, and `flock`.
   BSDs that ship `lockf(1)` should work too, but CI covers Linux and macOS
   only.
-- **`rsync` on `PATH`.** It is the copy engine for every restore and save
-  that cannot be a [copy-on-write clone](#copy-on-write-clones-reflinks) - on
-  ext4, HFS+, and anywhere else without reflinks. Preinstalled on macOS;
+- **`rsync` on `PATH`.** It is the copy engine for every save, and for every
+  restore that cannot be a [copy-on-write clone](#copy-on-write-clones-reflinks)
+  - on ext4, HFS+, and anywhere else without reflinks. Preinstalled on macOS;
   packaged as `rsync` on every Linux distribution.
 - **For clones on Linux, GNU `cp` with `--reflink`** (coreutils, standard on
   Linux distributions). On macOS the built-in `cp -c` clones on APFS, so
@@ -152,10 +152,11 @@ and safe - see [Eviction](#eviction).
 ### Copy-on-write clones (reflinks)
 
 Where the filesystem supports reflinks, a restore clones the entry's files
-instead of copying them, and a save clones the source into the store. A clone
-shares the original's data blocks, so it is fast and takes no extra space for
-file data until one side writes. On a machine with several runners, that removes
-the separate copy each runner would otherwise keep of every cached tool.
+instead of copying them. A clone shares the original's data blocks, so it is
+fast and takes no extra space for file data until one side writes. On a machine
+with several runners, that removes the separate copy each runner would otherwise
+keep of every cached tool. Saves still copy with `rsync`; see
+[Why saves still copy](#why-saves-still-copy) below.
 
 Clones are not hard links. Each clone is its own file with its own inode, and a
 write into a restored file copies only the blocks it touches, so the entry and
@@ -180,20 +181,39 @@ the source and destination can clone, and uses `rsync -a` when they cannot.
   makes an ordinary copy when it cannot clone, so a probe would pass on any
   filesystem.
 
-The clone paths build the tree `rsync -a` does: modes, timestamps, and symlinks
-are kept, hard links between files are not, and local-cache's own bookkeeping
-files are left out at any depth. Two differences remain. The clone paths remove
-those bookkeeping files after copying, so a subdirectory that held one gets a
-fresh mtime. And they keep metadata `rsync -a` drops: ACLs, and on macOS also
-extended attributes and file flags, which `clonefile(2)` carries with the data -
-so a restored copy matches the saved tree more closely than an rsync copy does.
-The entry layout and the marker format are the same on every path, so entries
-and targets written by any of them are interchangeable, and runners on older
-releases of this action can share a store with newer ones.
+A cloned restore builds the tree an rsync restore would: modes, timestamps, and
+symlinks are kept, hard links between files are not, and local-cache's own
+bookkeeping files are left out. The one difference is that the clone path
+removes those files after copying, so a subdirectory of the saved tree that held
+a file named `.local-cache-key` gets a fresh mtime. The entry layout and the
+marker format are the same on every path, so entries and targets written by any
+of them are interchangeable, and runners on older releases of this action can
+share a store with newer ones.
 
 On a store that clones, the size the [`gc` action](#the-gc-action) reports for
 each entry and target is its logical size. An entry and its targets share
 blocks, so the space a sweep frees is less than the sum of the sizes it reports.
+
+#### Why saves still copy
+
+A save always builds the new entry with `rsync -a`, even where restores clone. A
+clone carries metadata `rsync -a` drops - ACLs, and on macOS extended attributes
+and file flags, including the immutable flag that makes a later `rm -rf` fail.
+An entry that rsync built holds none of it, so every clone restored from it
+matches an rsync restore without a strip pass on each platform.
+
+The cost is one full copy per new entry: until the saving runner's next restore
+of that path, its source and the entry each hold the data. local-cache does not
+delete or replace the source after a save to win that space back, for two
+reasons:
+
+- **It heals on its own.** A save writes no restore marker into the source, so
+  the next restore to that path finds none and replaces the full copy with a
+  clone of the entry.
+- **There is no place to do it.** Composite actions have no post-step, and the
+  save runs mid-job (restore -> install -> save), so removing the source in the
+  save step would take the tool away from every later step of the job that just
+  installed it.
 
 ## Usage
 

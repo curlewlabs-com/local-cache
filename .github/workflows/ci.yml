@@ -36,9 +36,10 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-        # Each leg runs the whole suite through a different copy engine: rsync
-        # on ubuntu-latest (ext4), macOS cp -c on macos-latest (APFS), and GNU
-        # cp --reflink on a third leg that mounts XFS with reflinks over /tmp.
+        # Saves rsync into the store on every leg; restores run through a
+        # different engine per leg: rsync on ubuntu-latest (ext4), macOS cp -c
+        # on macos-latest (APFS), and GNU cp --reflink on a third leg that
+        # mounts XFS with reflinks over /tmp.
         # That third leg is an `include` rather than a matrix axis so
         # the two original legs keep the job names main's required checks
         # match on; its distinct `os` label is what makes it a new job instead
@@ -695,13 +696,14 @@ jobs:
 
       # The engine is chosen by probe, not configured, and a probe that wrongly
       # fails costs no correctness - only the disk and time clones exist to
-      # save - so nothing but an explicit per-leg expectation would notice. The
-      # XFS and APFS legs must clone, and the ext4 leg must keep rsync. Only
-      # the XFS leg also checks that the clones allocated no new data blocks:
-      # its /tmp is a private filesystem, while the others share theirs with
-      # whatever else the runner writes. The macOS step below makes the same
-      # check on a private APFS volume.
-      - name: Save and restore use the copy engine the filesystem supports
+      # save - so nothing but an explicit per-leg expectation would notice.
+      # Saves must rsync on every leg (cache-save.sh says why); restores must
+      # clone on the XFS and APFS legs and rsync on the ext4 one. Only the XFS
+      # leg also checks that the restore allocated no new data blocks: its /tmp
+      # is a private filesystem, while the others share theirs with whatever
+      # else the runner writes. The macOS step below makes the same check on a
+      # private APFS volume.
+      - name: Saves rsync and restores use the engine the filesystem supports
         env:
           EXPECT_COPY: ${{ (matrix.fs == 'xfs-reflink' || runner.os == 'macOS') && 'reflink' || 'rsync' }}
           PRIVATE_FS: ${{ matrix.fs == 'xfs-reflink' }}
@@ -709,16 +711,16 @@ jobs:
           mkdir -p /tmp/test-engine-src
           # 64 MiB, so two full copies would dwarf any metadata growth.
           head -c 67108864 /dev/urandom > /tmp/test-engine-src/blob
+          save_out=$(sh lib/cache-save.sh /tmp/test-engine-src engine-key /tmp/local-cache)
           sync
           used_before=$(df -Pk /tmp | awk 'NR==2 {print $3}')
-          save_out=$(sh lib/cache-save.sh /tmp/test-engine-src engine-key /tmp/local-cache)
           restore_out=$(sh lib/cache-restore.sh /tmp/test-engine-dst engine-key /tmp/local-cache "")
           sync
           used_after=$(df -Pk /tmp | awk 'NR==2 {print $3}')
           printf '%s\n%s\n' "$save_out" "$restore_out"
           case "$save_out" in
-            *", ${EXPECT_COPY})"*) ;;
-            *) echo "Expected save to use ${EXPECT_COPY}"; exit 1 ;;
+            *", rsync)"*) ;;
+            *) echo "Expected save to use rsync"; exit 1 ;;
           esac
           case "$restore_out" in
             *", ${EXPECT_COPY})"*) ;;
@@ -726,12 +728,12 @@ jobs:
           esac
           cmp /tmp/test-engine-src/blob /tmp/test-engine-dst/blob
           grown_kib=$((used_after - used_before))
-          echo "Filesystem grew ${grown_kib} KiB across the save and restore"
+          echo "Filesystem grew ${grown_kib} KiB across the restore"
           if [ "$PRIVATE_FS" = true ] && [ "$grown_kib" -gt 16384 ]; then
             echo "Clones allocated new data blocks: grew ${grown_kib} KiB"
             exit 1
           fi
-          echo "Copy engine (${EXPECT_COPY}): OK"
+          echo "Copy engines (save rsync, restore ${EXPECT_COPY}): OK"
 
       # Both engines must hand a consumer the same tree, so this runs the same
       # assertions on every leg: rsync on ext4, a clone path on XFS and APFS.
@@ -739,7 +741,11 @@ jobs:
       # clone path's emulation of --exclude: symlinks stay links, modes and
       # mtimes survive, hard links are NOT preserved (rsync -a has no -H), the
       # restore marker is dropped at any depth, and the engine's own probe
-      # files never land in an entry or a target.
+      # files never land in an entry or a target. On macOS it also gives the
+      # source an extended attribute, an ACL, and a locked (uchg) file: rsync
+      # drops all three, and a clone would carry them, so a restored tree that
+      # has any of them - or that a later rm -rf cannot remove - means an
+      # entry was built by something other than rsync.
       - name: Saved and restored trees match what rsync -a builds
         run: |
           src=/tmp/test-tree-src
@@ -753,6 +759,12 @@ jobs:
           ln "$src/data.txt" "$src/sub/hardlink"
           printf 'v2:other-key\n' > "$src/sub/nested/.local-cache-restore"
           touch -t 202001020304 "$src/data.txt" /tmp/test-tree-ref
+          if [ "$(uname -s)" = Darwin ]; then
+            xattr -w com.example.test kept "$src/tool.sh"
+            chmod +a "everyone deny delete" "$src/tool.sh"
+            printf 'locked\n' > "$src/locked.txt"
+            chflags uchg "$src/locked.txt"
+          fi
           sh lib/cache-save.sh "$src" tree-key /tmp/local-cache
           sh lib/cache-restore.sh "$dst" tree-key /tmp/local-cache ""
           . lib/cache-common.sh
@@ -774,6 +786,20 @@ jobs:
           [ ! -e "$dst/.local-cache-key" ] || { echo "Entry metadata leaked into the target"; exit 1; }
           [ -z "$(find "$entry" "$dst" -name '.local-cache-reflink-probe.*')" ] \
             || { echo "Reflink probe files were left behind"; exit 1; }
+          if [ "$(uname -s)" = Darwin ]; then
+            for f in "$entry/tool.sh" "$dst/tool.sh" "$entry/locked.txt" "$dst/locked.txt"; do
+              if xattr -p com.example.test "$f" >/dev/null 2>&1; then
+                echo "Extended attribute carried into $f"; exit 1
+              fi
+              [ "$(/usr/bin/stat -f %f "$f")" = 0 ] || { echo "File flags carried into $f"; exit 1; }
+              # ls -le is the only stock tool that prints a file's ACL.
+              # shellcheck disable=SC2012
+              [ -z "$(ls -le "$f" | sed 1d)" ] || { echo "ACL carried into $f"; exit 1; }
+            done
+            rm -rf "$dst" || { echo "Restored tree cannot be removed"; exit 1; }
+            sh lib/cache-restore.sh "$dst" tree-key /tmp/local-cache "" >/dev/null
+            [ -f "$dst/locked.txt" ] || { echo "Re-restore after removal failed"; exit 1; }
+          fi
           echo "Tree parity: OK"
 
       # A clone needs the store and the target on one filesystem. On the XFS
@@ -794,9 +820,10 @@ jobs:
       # macOS cp -c silently copies when it cannot clone, so the APFS check in
       # copy_tree reads the volume type rather than probing - and only a real
       # filesystem pair proves it right. Each volume here is a private disk
-      # image: clones within one APFS volume must allocate no new data blocks,
-      # while an HFS+ volume (one device, no clones) and a restore from APFS
-      # onto HFS+ (two devices) must both fall back to rsync.
+      # image: a restore within one APFS volume must clone and allocate no new
+      # data blocks, while an HFS+ volume (one device, no clones) and a restore
+      # from APFS onto HFS+ (two devices) must both fall back to rsync. Saves
+      # rsync everywhere.
       - name: On macOS, clones need one APFS volume
         if: runner.os == 'macOS'
         run: |
@@ -815,17 +842,17 @@ jobs:
 
           mkdir -p "$apfs/src"
           head -c 67108864 /dev/urandom > "$apfs/src/blob"
+          out=$(sh lib/cache-save.sh "$apfs/src" apfs-key "$apfs/cache")
+          expect_engine rsync "$out" "an APFS save"
           sync
           used_before=$(df -Pk "$apfs" | awk 'NR==2 {print $3}')
-          out=$(sh lib/cache-save.sh "$apfs/src" apfs-key "$apfs/cache")
-          expect_engine reflink "$out" "an APFS save"
           out=$(sh lib/cache-restore.sh "$apfs/dst" apfs-key "$apfs/cache" "")
           expect_engine reflink "$out" "an APFS restore"
           sync
           used_after=$(df -Pk "$apfs" | awk 'NR==2 {print $3}')
           cmp "$apfs/src/blob" "$apfs/dst/blob"
           grown_kib=$((used_after - used_before))
-          echo "APFS volume grew ${grown_kib} KiB across the save and restore"
+          echo "APFS volume grew ${grown_kib} KiB across the restore"
           if [ "$grown_kib" -gt 16384 ]; then
             echo "Clones allocated new data blocks: grew ${grown_kib} KiB"
             exit 1

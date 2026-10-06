@@ -99,7 +99,8 @@ apfs_can_clone() {
 # Copy the contents of SRC_DIR into the existing directory DEST_DIR, leaving
 # out every file or directory, at any depth, named by the remaining arguments
 # (rsync's unanchored --exclude). Sets copy_method to the engine used, for the
-# caller's log line.
+# caller's log line. The restore's copy out of the store; saves always rsync
+# in (cache-save.sh says why).
 #
 # Where the filesystem can clone - GNU cp --reflink on Linux, cp -c on an APFS
 # volume - the copy is a clone: DEST shares SRC's data blocks until either side
@@ -110,14 +111,15 @@ apfs_can_clone() {
 #
 # The clone paths build the tree rsync would: cp -p keeps mode, timestamps, and
 # ownership where permitted; -P copies symlinks as symlinks; and no engine
-# preserves hard links between files. They also keep what rsync -a drops: ACLs,
-# and on macOS extended attributes and file flags, which clonefile(2) carries
-# with the data. cp has no --exclude, so the excluded names are deleted after
-# the copy, and a subdirectory one was deleted from gets a fresh mtime where
-# rsync would carry the source's. --reflink=auto rather than =always: the probe
-# proved the filesystem clones, but a single file can still refuse (Btrfs
-# nodatacow), and that file should be copied rather than fail the whole
-# restore; cp -c falls back the same way on its own.
+# preserves hard links between files. A clone would also carry what rsync -a
+# drops - ACLs, and on macOS extended attributes and file flags, which
+# clonefile(2) copies with the data - but the source is a store entry that
+# rsync built, so it holds none. cp has no --exclude, so the excluded names are
+# deleted after the copy, and a subdirectory one was deleted from gets a fresh
+# mtime where rsync would carry the source's. --reflink=auto rather than
+# =always: the probe proved the filesystem clones, but a single file can still
+# refuse (Btrfs nodatacow), and that file should be copied rather than fail
+# the whole restore; cp -c falls back the same way on its own.
 copy_tree() {
     ct_src="$1"
     ct_dest="$2"
