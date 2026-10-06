@@ -12,10 +12,12 @@ README.md for full context.
   with no warnings.
 - No external dependencies beyond `rsync`, `sh`, and standard POSIX
   utilities. The one published-action dependency is local-mutex, which
-  has its own section below. GNU `cp --reflink` is used only where a
-  probe shows it can clone, never required: `copy_tree` in
-  `lib/cache-common.sh` falls back to `rsync` everywhere else, so a
-  change to either copy path must keep the two building the same tree.
+  has its own section below. GNU `cp --reflink` (Linux) and the
+  built-in `cp -c` (macOS, APFS) are used only where `copy_tree` in
+  `lib/cache-common.sh` finds the filesystem can clone, never required:
+  it falls back to `rsync` everywhere else, so a change to any copy path
+  must keep them all building the same tree. Clones are restore-only;
+  saves always `rsync`, for the reasons at that line of `lib/cache-save.sh`.
 - The action interface (`action.yml`, `save/action.yml`) must remain
   compatible with `actions/cache` inputs and outputs: `path`, `key`,
   `restore-keys`, `cache-hit`, `cache-matched-key`.

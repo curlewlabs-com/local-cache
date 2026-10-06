@@ -80,17 +80,32 @@ cleanup_tmp() {
 trap cleanup_tmp EXIT INT TERM
 
 printf '::debug::Saving to local cache: %s\n' "$cache_key"
+# Always rsync into the store, never clone, even where restores clone
+# (copy_tree): an entry rsync built holds only what rsync -a keeps, so every
+# restore cloned from it hands out the same tree an rsync restore would. A
+# clone carries more - ACLs, and on macOS extended attributes and file flags
+# (an immutable file a later rm -rf cannot remove) - which would otherwise
+# need a platform-specific strip pass here.
+#
+# The cost is a full copy: until this lane's next restore, the source and the
+# entry each hold the data. Nothing here deletes or replaces the source to win
+# that back, for two reasons. It heals on its own: a save writes no restore
+# marker into the source, so the next restore on this lane finds none and
+# swaps the full copy for a clone of the entry. And it cannot be done here: a
+# composite action has no post-step, and this step runs mid-job (restore ->
+# install -> save), so removing the source would take the tool away from every
+# later step of the job that just installed it.
+#
 # Exclude the restore marker so a prefix-hit restore followed by save on the
 # same path (restore -> install -> save, the canonical README pattern) doesn't
 # carry the previous entry's name into the new entry on disk.
-mkdir -p "$tmp_entry"
-copy_tree "$path_to_cache" "$tmp_entry" "$MARKER_NAME"
+rsync -a --exclude="${MARKER_NAME}" "${path_to_cache}/" "${tmp_entry}/"
 printf '%s' "$cache_key" > "${tmp_entry}/${ENTRY_KEY_NAME}"
 mv "$tmp_entry" "${entries_dir}/${encoded_key}"
 
 elapsed=$(( $(date +%s) - start_time ))
 size=$(du -sh "${entries_dir}/${encoded_key}" 2>/dev/null | cut -f1 || printf '?')
 file_count=$(find "${entries_dir}/${encoded_key}" -type f | wc -l | tr -d ' ')
-printf '::notice::Cache saved: %s (%s files, %s in %ds, %s)\n' "$cache_key" "$file_count" "$size" "$elapsed" "$copy_method"
+printf '::notice::Cache saved: %s (%s files, %s in %ds, rsync)\n' "$cache_key" "$file_count" "$size" "$elapsed"
 printf '::debug::Entry path: %s\n' "${entries_dir}/${encoded_key}"
-append_summary "- **local-cache** \`${cache_key}\` -> Saved (${size}, ${elapsed}s, ${copy_method})"
+append_summary "- **local-cache** \`${cache_key}\` -> Saved (${size}, ${elapsed}s, rsync)"

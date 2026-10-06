@@ -45,14 +45,13 @@ that initial population, no runner ever downloads again.
   a Windows host, and it gets a real POSIX filesystem, `rsync`, and `flock`.
   BSDs that ship `lockf(1)` should work too, but CI covers Linux and macOS
   only.
-- **`rsync` on `PATH`.** It is the copy engine for every restore and save
-  that cannot be a [copy-on-write clone](#copy-on-write-clones-reflinks) - on
-  macOS, on ext4, and anywhere else without reflinks. Preinstalled on macOS;
+- **`rsync` on `PATH`.** It is the copy engine for every save, and for every
+  restore that cannot be a [copy-on-write clone](#copy-on-write-clones-reflinks)
+  - on ext4, HFS+, and anywhere else without reflinks. Preinstalled on macOS;
   packaged as `rsync` on every Linux distribution.
-- **Optional: GNU `cp` with `--reflink`** (coreutils, standard on Linux
-  distributions). Where the filesystem supports reflinks it turns restores and
-  saves into [copy-on-write clones](#copy-on-write-clones-reflinks); without it,
-  everything runs on `rsync`.
+- **For clones on Linux, GNU `cp` with `--reflink`** (coreutils, standard on
+  Linux distributions). On macOS the built-in `cp -c` clones on APFS, so
+  nothing extra is needed. Without either, everything runs on `rsync`.
 - **A SHA-256 command on `PATH`:** `sha256sum` (Linux `coreutils`) or `shasum`
   (macOS, Perl core). Everything else the scripts call - `sh`, `find`, `du`,
   `stat`, `mktemp`, `ls`, `mv`, `rm` and the rest - is base POSIX userland,
@@ -153,40 +152,68 @@ and safe - see [Eviction](#eviction).
 ### Copy-on-write clones (reflinks)
 
 Where the filesystem supports reflinks, a restore clones the entry's files
-instead of copying them, and a save clones the source into the store. A clone
-shares the original's data blocks, so it is fast and takes no extra space for
-file data until one side writes. On a machine with several runners, that removes
-the separate copy each runner would otherwise keep of every cached tool.
+instead of copying them. A clone shares the original's data blocks, so it is
+fast and takes no extra space for file data until one side writes. On a machine
+with several runners, that removes the separate copy each runner would otherwise
+keep of every cached tool. Saves still copy with `rsync`; see
+[Why saves still copy](#why-saves-still-copy) below.
 
 Clones are not hard links. Each clone is its own file with its own inode, and a
 write into a restored file copies only the blocks it touches, so the entry and
 every other runner's copy stay as they were - the isolation that v1's hard
-links broke. CI runs the same isolation tests against both copy paths.
+links broke. CI runs the same isolation tests against every copy path.
 
-There is nothing to configure. Before each copy, local-cache clones a small
-probe file into the destination, and uses GNU `cp --reflink` only when that
-succeeds and the source and destination are on one filesystem; otherwise it
-uses `rsync -a`. In practice that means clones on Linux when the `cache-dir`
-and the restore target share a filesystem with reflink support - XFS created
-with it enabled (`mkfs.xfs -m reflink=1`), Btrfs, or another that implements
-Linux's `FICLONE` - and `rsync` on ext4, tmpfs, or when the target is on a
-different filesystem from the store. It probes rather than checking the
-filesystem type because support depends on how the filesystem was created and
-on the kernel, not on the type alone. The stock macOS `cp` has no `--reflink`,
-so macOS runners keep `rsync`; a runner with GNU coreutils first on `PATH`
-passes the probe and clones on APFS.
+There is nothing to configure: before each copy, local-cache works out whether
+the source and destination can clone, and uses `rsync -a` when they cannot.
 
-Both paths build the same tree: modes, timestamps, and symlinks are kept, hard
-links between files are not (as with `rsync -a`), and local-cache's own
-bookkeeping files are left out at any depth. The one difference is that the
-clone path removes those files after copying, so a subdirectory that held one
-gets a fresh mtime. The entry layout and the marker format are the same for
-both, so entries and targets written by either path are interchangeable, and
-runners on older releases of this action can share a store with newer ones.
+- **Linux:** it clones a small probe file into the destination and uses GNU
+  `cp --reflink` only when that succeeds and the source and destination are on
+  one filesystem. That means clones on a filesystem with reflink support - XFS
+  created with it enabled (`mkfs.xfs -m reflink=1`), Btrfs, or another that
+  implements Linux's `FICLONE` - and `rsync` on ext4, tmpfs, or when the
+  target is on a different filesystem from the store. It probes rather than
+  checking the filesystem type because support depends on how the filesystem
+  was created and on the kernel, not on the type alone.
+- **macOS:** it uses the built-in `cp -c` (`clonefile(2)`) when the source and
+  destination are on one APFS volume - the normal case, since the runner's
+  disk is APFS - and `rsync` on HFS+ or when they are on different volumes.
+  Here it checks the volume type instead of probing, because `cp -c` quietly
+  makes an ordinary copy when it cannot clone, so a probe would pass on any
+  filesystem.
+
+A cloned restore builds the tree an rsync restore would: modes, timestamps, and
+symlinks are kept, hard links between files are not, and local-cache's own
+bookkeeping files are left out. The one difference is that the clone path
+removes those files after copying, so a subdirectory of the saved tree that held
+a file named `.local-cache-key` gets a fresh mtime. The entry layout and the
+marker format are the same on every path, so entries and targets written by any
+of them are interchangeable, and runners on older releases of this action can
+share a store with newer ones.
 
 On a store that clones, the size the [`gc` action](#the-gc-action) reports for
 each entry and target is its logical size. An entry and its targets share
 blocks, so the space a sweep frees is less than the sum of the sizes it reports.
+
+#### Why saves still copy
+
+A save always builds the new entry with `rsync -a`, even where restores clone. A
+clone carries metadata `rsync -a` drops - ACLs, and on macOS extended attributes
+and file flags, including the immutable flag that makes a later `rm -rf` fail.
+An entry that rsync built holds none of it, so every clone restored from it
+matches an rsync restore without a strip pass on each platform.
+
+The cost is one full copy per new entry: until the saving runner's next restore
+of that path, its source and the entry each hold the data. local-cache does not
+delete or replace the source after a save to win that space back, for two
+reasons:
+
+- **It heals on its own.** A save writes no restore marker into the source, so
+  the next restore to that path finds none and replaces the full copy with a
+  clone of the entry.
+- **There is no place to do it.** Composite actions have no post-step, and the
+  save runs mid-job (restore -> install -> save), so removing the source in the
+  save step would take the tool away from every later step of the job that just
+  installed it.
 
 ## Usage
 
