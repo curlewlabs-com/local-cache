@@ -65,7 +65,7 @@ jobs:
         with:
           repository: curlewlabs-com/local-mutex
           # renovate: datasource=github-tags depName=curlewlabs-com/local-mutex pin=digest
-          ref: 88393519d9c8488eeea41bbbb810e33a1ac6609a # v2.1.0
+          ref: d0778d11cf41ca3e20614fb6127f04e73961f4b7 # v2.3.0
           path: .local-mutex
 
       # Every fixture in this job lives under /tmp - sources, cache dirs,
@@ -1541,7 +1541,7 @@ jobs:
         with:
           repository: curlewlabs-com/local-mutex
           # renovate: datasource=github-tags depName=curlewlabs-com/local-mutex pin=digest
-          ref: 88393519d9c8488eeea41bbbb810e33a1ac6609a # v2.1.0
+          ref: d0778d11cf41ca3e20614fb6127f04e73961f4b7 # v2.3.0
           path: .local-mutex
       - name: Stress - prefix-restores racing gc on a shared cache-dir
         env:
