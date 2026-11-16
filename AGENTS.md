@@ -70,21 +70,25 @@ Why not a tag:
 
 ### Bumping the pin
 
-Move every site in one dedicated PR. `grep -rn local-mutex .`
-enumerates the live set - sweep that rather than a remembered count,
-because a single file can carry the pin more than once.
+Every site moves in one PR. Renovate opens it when local-mutex
+releases: it reads the `uses:` refs itself and the `ref:` inputs
+through the `# renovate:` comment above each, and moves each SHA with
+its trailing comment, all on one branch. By hand,
+`grep -rn local-mutex .` enumerates the live set - sweep that rather
+than a remembered count, because a single file can carry the pin more
+than once.
 
 Two traps:
 
-- **No updater moves this pin.** Renovate keeps the other action pins
-  current and is told to leave local-mutex alone, because a bump has to
-  move every site and an updater reaches only some. The
+- **A site that is not a `uses:` ref needs the comment.** The
   `actions/checkout` steps in `.github/workflows/ci.yml` that fetch
   local-mutex for the direct-script gc lock tests pass it as a
-  `with:`/`ref:` input, not a `uses:` ref, which no updater reads.
-  Every site moves only when a human moves it.
+  `with:`/`ref:` input. Renovate reads those only through the
+  `# renovate: ... pin=digest` comment on the line above; a new one
+  without it stays behind when the rest move.
 - **The trailing comment is documentation, not a checked assertion.**
-  Nothing rewrites or verifies it. Re-derive the tag->SHA mapping from
+  Renovate rewrites it with the SHA, and nothing verifies one written
+  by hand. When editing by hand, re-derive the tag->SHA mapping from
   the local-mutex repo instead of trusting what the comment says.
 
 ## Pinning everything else
