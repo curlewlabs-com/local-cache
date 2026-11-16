@@ -76,16 +76,16 @@ because a single file can carry the pin more than once.
 
 Two traps:
 
-- **The CI checkouts are invisible to dependabot.** The
+- **No updater moves this pin.** Renovate keeps the other action pins
+  current and is told to leave local-mutex alone, because a bump has to
+  move every site and an updater reaches only some. The
   `actions/checkout` steps in `.github/workflows/ci.yml` that fetch
   local-mutex for the direct-script gc lock tests pass it as a
-  `with:`/`ref:` input, not a `uses:` ref. Dependabot never sees them;
-  they move only when a human moves them.
+  `with:`/`ref:` input, not a `uses:` ref, which no updater reads.
+  Every site moves only when a human moves it.
 - **The trailing comment is documentation, not a checked assertion.**
-  Dependabot rewrites it when it bumps a `uses:` ref, but it will not
-  repair one that is already wrong (dependabot-core#7912). Re-derive
-  the tag->SHA mapping from the local-mutex repo instead of trusting
-  what the comment says.
+  Nothing rewrites or verifies it. Re-derive the tag->SHA mapping from
+  the local-mutex repo instead of trusting what the comment says.
 
 ## Pinning everything else
 
