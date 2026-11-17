@@ -13,7 +13,7 @@ jobs:
   shellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Shellcheck
         run: shellcheck lib/cache-common.sh lib/cache-restore.sh lib/cache-save.sh lib/cache-gc.sh
 
@@ -27,7 +27,7 @@ jobs:
   actionlint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run actionlint
         run: |
           # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v(?<version>.+)$
@@ -58,10 +58,10 @@ jobs:
       # own copy from that action's `uses:` and ignore this.
       LOCAL_MUTEX_CLI: ${{ github.workspace }}/.local-mutex/lib/local-mutex.sh
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check out local-mutex (pinned) for the direct-script gc lock tests
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: curlewlabs-com/local-mutex
           # renovate: datasource=github-tags depName=curlewlabs-com/local-mutex pin=digest
@@ -1535,9 +1535,9 @@ jobs:
     env:
       LOCAL_MUTEX_CLI: ${{ github.workspace }}/.local-mutex/lib/local-mutex.sh
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check out local-mutex (pinned)
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: curlewlabs-com/local-mutex
           # renovate: datasource=github-tags depName=curlewlabs-com/local-mutex pin=digest
