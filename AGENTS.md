@@ -93,38 +93,35 @@ Two traps:
 
 ## Pinning everything else
 
-The SHA rule above applies to local-mutex and stops there. Every other
-action in this repo - the `actions/checkout` steps in
-`.github/workflows/ci.yml` - stays on an exact version tag such as
-`@v7.0.1`. Do not "finish the job" by converting those to SHAs.
+Every other action in this repo - the `actions/checkout` steps in
+`.github/workflows/ci.yml` - is pinned the same way: its release's
+commit SHA, with the tag in a trailing comment. These steps run only in
+our CI, but a tag can still be moved to other code between two of its
+runs, and only a SHA names what runs. Renovate proposes each new
+release and moves the SHA and the comment together.
 
-Two reasons:
+This costs alerting. GitHub raises Dependabot *alerts* only for actions
+pinned with semantic versioning, [not for actions pinned to a
+SHA][secure-use], so a fix to one of these actions reaches this repo as
+Renovate's next update rather than as an alert.
 
-- **They do not ship.** The SHA rule exists because `action.yml` runs
-  inside a consumer's pipeline, where our tagging discipline is not
-  something they can verify. Our CI workflows run only here.
-- **A SHA pin costs alerting.** GitHub raises Dependabot *alerts* only
-  for actions pinned with semantic versioning, [not for actions pinned
-  to a SHA][secure-use]. For a third-party action that genuinely
-  receives advisories, converting it trades away vulnerability alerts
-  to gain protection against a tag move - a bad trade for a workflow
-  that holds no secrets and runs on an ephemeral runner.
-
-This is why `ci.yml` carries both forms on adjacent lines:
+The checkout steps that fetch local-mutex carry two pins on adjacent
+lines:
 
 ```yaml
 - name: Check out local-mutex (pinned) for the direct-script gc lock tests
-  uses: actions/checkout@v7.0.1
+  uses: actions/checkout@<checkout commit SHA> # v7.0.1
   with:
     repository: curlewlabs-com/local-mutex
-    ref: 88393519d9c8488eeea41bbbb810e33a1ac6609a # v2.1.0
+    # renovate: datasource=github-tags depName=curlewlabs-com/local-mutex pin=digest
+    ref: <local-mutex commit SHA> # v2.3.0
     path: .local-mutex
 ```
 
-The `uses:` is a version tag because checkout is CI-only. The SHA below
-it is not a checkout pin at all - it is the local-mutex pin, which this
-step carries because the tests must run against the identical
-local-mutex tree the actions resolve.
+The `uses:` SHA is the checkout pin. The `ref:` SHA is the local-mutex
+pin, which this step carries because the tests must run against the
+identical local-mutex tree the actions resolve, so it moves with the
+local-mutex pins above, never with checkout's.
 
 [secure-use]: https://docs.github.com/en/actions/reference/security/secure-use
 
