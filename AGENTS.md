@@ -53,7 +53,7 @@ Pin local-mutex to a full-length commit SHA, carrying the tag it
 resolved from in a trailing comment. Never pin to a version tag.
 
 ```yaml
-uses: curlewlabs-com/local-mutex@88393519d9c8488eeea41bbbb810e33a1ac6609a # v2.1.0
+uses: curlewlabs-com/local-mutex@<full commit SHA> # vX.Y.Z
 ```
 
 Why not a tag:
