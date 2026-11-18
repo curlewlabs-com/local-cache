@@ -53,10 +53,7 @@ runs:
       shell: sh
       env:
         INPUT_PATH: ${{ inputs.path }}
-        GH_ACTION_PATH: ${{ github.action_path }}
-      run: |
-        . "$GH_ACTION_PATH/lib/cache-common.sh"
-        printf 'path=%s\n' "$(normalize_path "$INPUT_PATH")" >> "$GITHUB_OUTPUT"
+      run: '"$GITHUB_ACTION_PATH/lib/normalize-target.sh"'
 
     # Phase 1: Quick check under the per-TARGET lock.
     # If the target already holds the requested key (steady state) we finish
@@ -89,7 +86,9 @@ runs:
     - name: Surface quick-check outputs
       id: check
       shell: sh
-      run: cat "${{ steps.check-lock.outputs.output-file }}" >> "$GITHUB_OUTPUT"
+      env:
+        OUTPUT_FILE: ${{ steps.check-lock.outputs.output-file }}
+      run: '"$GITHUB_ACTION_PATH/lib/surface-outputs.sh"'
 
     # Phase 2: Serialized restore. Runs when Phase 1 found a match it could not
     # serve from an already-current target (skipped on a miss, when matched-key
@@ -135,4 +134,6 @@ runs:
       if: steps.check.outputs.skip-lock != 'true' && steps.check.outputs.matched-key != ''
       id: restore
       shell: sh
-      run: cat "${{ steps.restore-lock.outputs.output-file }}" >> "$GITHUB_OUTPUT"
+      env:
+        OUTPUT_FILE: ${{ steps.restore-lock.outputs.output-file }}
+      run: '"$GITHUB_ACTION_PATH/lib/surface-outputs.sh"'

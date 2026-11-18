@@ -22,8 +22,7 @@ locks. A short discussion up front saves rework.
 CI runs these on every push to `main` and every pull request against it:
 
 ```sh
-shellcheck lib/cache-common.sh lib/cache-restore.sh lib/cache-save.sh \
-  lib/cache-gc.sh
+shellcheck -x --source-path=SCRIPTDIR lib/*.sh
 actionlint
 ```
 
