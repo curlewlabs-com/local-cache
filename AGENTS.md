@@ -10,6 +10,9 @@ README.md for full context.
 
 - Shell scripts in `lib/` must use `#!/bin/sh` and pass `shellcheck`
   with no warnings.
+- Each `run:` in an `action.yml` is one call of an executable script in
+  `lib/`, with its inputs passed through `env:`, never a `${{ }}` pasted into
+  the shell, so shellcheck reads all of the shell a consumer's job runs.
 - No external dependencies beyond `rsync`, `sh`, and standard POSIX
   utilities. The one published-action dependency is local-mutex, which
   has its own section below. GNU `cp --reflink` (Linux) and the
