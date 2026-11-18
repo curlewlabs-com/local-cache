@@ -88,7 +88,7 @@ check_not_restore_ancestor() {
     done
     [ -z "$danger_norm" ] && danger_norm="/"
     case "$danger_norm" in
-        "$target_norm"|"$target_norm"/*)
+        "$target_norm" | "$target_norm"/*)
             printf '::error::cache-restore: refusing to restore to %s - rm -rf would delete %s (%s)\n' "$path_to_cache" "$danger_label" "$danger_raw" >&2
             exit 2
             ;;
@@ -119,7 +119,7 @@ esac
 # Trivially unsafe paths - caught even when HOME/RUNNER_WORKSPACE/
 # GITHUB_WORKSPACE are all unset (e.g. local smoke-testing).
 case "$path_to_cache" in
-    /|/.|/..)
+    / | /. | /..)
         printf '::error::cache-restore: refusing to restore to %s - rm -rf would affect the system root\n' "$path_to_cache" >&2
         exit 2
         ;;
@@ -203,7 +203,7 @@ record_target() {
     rt_dir="${cache_dir}/${TARGETS_DIR_NAME}/$(basename "$1")"
     mkdir -p "$rt_dir" 2>/dev/null || return 0
     rt_file="${rt_dir}/$(sha256_hex "$rt_norm")"
-    printf '%s' "$rt_norm" > "$rt_file" 2>/dev/null \
+    printf '%s' "$rt_norm" >"$rt_file" 2>/dev/null \
         || printf '::debug::record_target: could not write %s (read-only store?)\n' "$rt_file"
 }
 
@@ -211,14 +211,14 @@ record_target() {
 # resolved was evicted before Phase 2 could lock it - a clean miss beats copying
 # a half-deleted source. Leaves the target untouched, matching a cold-start miss.
 emit_miss() {
-    em_elapsed=$(( $(date +%s) - start_time ))
+    em_elapsed=$(($(date +%s) - start_time))
     printf '::notice::Cache miss: %s\n' "$cache_key"
     printf '::debug::No match found for key or any restore-keys prefix\n'
     append_summary "- **local-cache** \`${cache_key}\` -> Miss (${em_elapsed}s)"
-    printf 'cache-hit=false\n' >> "$GITHUB_OUTPUT"
-    printf 'cache-matched-key=\n' >> "$GITHUB_OUTPUT"
+    printf 'cache-hit=false\n' >>"$GITHUB_OUTPUT"
+    printf 'cache-matched-key=\n' >>"$GITHUB_OUTPUT"
     if [ -n "${GITHUB_ENV:-}" ]; then
-        printf 'LOCAL_CACHE_HIT=false\nLOCAL_CACHE_MATCHED_KEY=\n' >> "$GITHUB_ENV"
+        printf 'LOCAL_CACHE_HIT=false\nLOCAL_CACHE_MATCHED_KEY=\n' >>"$GITHUB_ENV"
     fi
 }
 
@@ -230,32 +230,32 @@ do_restore() {
     # If a previous v2 restore left a marker matching this key, the
     # target already has the right content - skip the copy entirely.
     if is_current "$matched_key"; then
-        elapsed=$(( $(date +%s) - start_time ))
+        elapsed=$(($(date +%s) - start_time))
         printf '::debug::Target is current (marker matches) - skipping restore\n'
         if [ "$is_exact" = "true" ]; then
-            printf 'cache-hit=true\n' >> "$GITHUB_OUTPUT"
+            printf 'cache-hit=true\n' >>"$GITHUB_OUTPUT"
             printf '::notice::Cache hit (exact, skipped): %s (%ds)\n' "$matched_key" "$elapsed"
             append_summary "- **local-cache** \`${matched_key}\` -> Hit (skipped, ${elapsed}s)"
         else
-            printf 'cache-hit=false\n' >> "$GITHUB_OUTPUT"
+            printf 'cache-hit=false\n' >>"$GITHUB_OUTPUT"
             printf '::notice::Cache hit (prefix, skipped): %s (%ds)\n' "$matched_key" "$elapsed"
             append_summary "- **local-cache** \`${matched_key}\` -> Prefix hit (skipped, ${elapsed}s)"
         fi
-        printf 'cache-matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
+        printf 'cache-matched-key=%s\n' "$matched_key" >>"$GITHUB_OUTPUT"
 
         if [ -n "${GITHUB_ENV:-}" ]; then
-            printf 'LOCAL_CACHE_HIT=%s\nLOCAL_CACHE_MATCHED_KEY=%s\n' "$is_exact" "$matched_key" >> "$GITHUB_ENV"
+            printf 'LOCAL_CACHE_HIT=%s\nLOCAL_CACHE_MATCHED_KEY=%s\n' "$is_exact" "$matched_key" >>"$GITHUB_ENV"
         fi
 
         if [ "$check_only" = "true" ]; then
-            printf 'skip-lock=true\n' >> "$GITHUB_OUTPUT"
+            printf 'skip-lock=true\n' >>"$GITHUB_OUTPUT"
         fi
         mark_used "$entry_path"
         record_target "$entry_path"
         return
     fi
 
-    # In check-only mode, if we aren't current, we stop here and let the 
+    # In check-only mode, if we aren't current, we stop here and let the
     # serialized step take over.
     if [ "$check_only" = "true" ]; then
         return
@@ -269,26 +269,26 @@ do_restore() {
     copy_tree "$entry_path" "$path_to_cache" "$MARKER_NAME" "$ENTRY_KEY_NAME"
 
     # Write the v2 marker so future restores with the same key skip.
-    printf '%s:%s' "$MARKER_VERSION" "$matched_key" > "${path_to_cache}/${MARKER_NAME}"
+    printf '%s:%s' "$MARKER_VERSION" "$matched_key" >"${path_to_cache}/${MARKER_NAME}"
 
-    elapsed=$(( $(date +%s) - start_time ))
+    elapsed=$(($(date +%s) - start_time))
     size=$(du -sh "$path_to_cache" 2>/dev/null | cut -f1 || printf '?')
     file_count=$(find "$path_to_cache" -type f | wc -l | tr -d ' ')
     printf '::debug::Restored %s files (%s) from: %s\n' "$file_count" "$size" "$entry_path"
     printf '::debug::Cache dir: %s\n' "$cache_dir"
     if [ "$is_exact" = "true" ]; then
-        printf 'cache-hit=true\n' >> "$GITHUB_OUTPUT"
+        printf 'cache-hit=true\n' >>"$GITHUB_OUTPUT"
         printf '::notice::Cache hit (exact): %s (%s in %ds, %s)\n' "$matched_key" "$size" "$elapsed" "$copy_method"
         append_summary "- **local-cache** \`${matched_key}\` -> Hit (${size}, ${elapsed}s, ${copy_method})"
     else
-        printf 'cache-hit=false\n' >> "$GITHUB_OUTPUT"
+        printf 'cache-hit=false\n' >>"$GITHUB_OUTPUT"
         printf '::notice::Cache hit (prefix): %s (%s in %ds, %s)\n' "$matched_key" "$size" "$elapsed" "$copy_method"
         append_summary "- **local-cache** \`${matched_key}\` -> Prefix hit (${size}, ${elapsed}s, ${copy_method})"
     fi
-    printf 'cache-matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
+    printf 'cache-matched-key=%s\n' "$matched_key" >>"$GITHUB_OUTPUT"
 
     if [ -n "${GITHUB_ENV:-}" ]; then
-        printf 'LOCAL_CACHE_HIT=%s\nLOCAL_CACHE_MATCHED_KEY=%s\n' "$is_exact" "$matched_key" >> "$GITHUB_ENV"
+        printf 'LOCAL_CACHE_HIT=%s\nLOCAL_CACHE_MATCHED_KEY=%s\n' "$is_exact" "$matched_key" >>"$GITHUB_ENV"
     fi
 
     mark_used "$entry_path"
@@ -340,7 +340,7 @@ elif [ -d "${entries_dir}/${legacy_safe_key}" ]; then
     matched_key="$cache_key"
 elif [ -n "$restore_keys" ]; then
     tmpfile=$(mktemp)
-    printf '%s\n' "$restore_keys" > "$tmpfile"
+    printf '%s\n' "$restore_keys" >"$tmpfile"
     while IFS= read -r prefix; do
         [ -z "$prefix" ] && continue
         [ -n "$matched_name" ] && break
@@ -351,7 +351,7 @@ elif [ -n "$restore_keys" ]; then
         # shellcheck disable=SC2012,SC2015
         for entry_name in $(cd "${entries_dir}" 2>/dev/null && ls -dt -- * 2>/dev/null || true); do
             case "$entry_name" in
-                .|..|.tmp-*) continue ;;
+                . | .. | .tmp-*) continue ;;
             esac
             entry_key=$(read_entry_key "${entries_dir}/${entry_name}")
             case "$entry_key" in
@@ -362,7 +362,7 @@ elif [ -n "$restore_keys" ]; then
                     ;;
             esac
         done
-    done < "$tmpfile"
+    done <"$tmpfile"
     rm -f "$tmpfile"
 fi
 
@@ -376,8 +376,8 @@ fi
 if [ "$check_only" = "true" ]; then
     # Hand the resolved entry to Phase 2 so its per-key lock names this entry's
     # own key - the same lock gc takes to evict it.
-    printf 'matched-name=%s\n' "$matched_name" >> "$GITHUB_OUTPUT"
-    printf 'matched-key=%s\n' "$matched_key" >> "$GITHUB_OUTPUT"
+    printf 'matched-name=%s\n' "$matched_name" >>"$GITHUB_OUTPUT"
+    printf 'matched-key=%s\n' "$matched_key" >>"$GITHUB_OUTPUT"
 fi
 
 # In --check mode do_restore emits skip-lock + hit outputs only if the target is

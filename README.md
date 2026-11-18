@@ -48,7 +48,7 @@ that initial population, no runner ever downloads again.
 - **`rsync` on `PATH`.** It is the copy engine for every save, and for every
   restore that cannot be a [copy-on-write clone](#copy-on-write-clones-reflinks)
   - on ext4, HFS+, and anywhere else without reflinks. Preinstalled on macOS;
-  packaged as `rsync` on every Linux distribution.
+    packaged as `rsync` on every Linux distribution.
 - **For clones on Linux, GNU `cp` with `--reflink`** (coreutils, standard on
   Linux distributions). On macOS the built-in `cp -c` clones on APFS, so
   nothing extra is needed. Without either, everything runs on `rsync`.
@@ -94,12 +94,12 @@ copied to the target path - cloned where the filesystem supports reflinks,
 - **No marker (v1 upgrade)** -> treated as stale, cleaned and re-synced
 
 **Two-phase restore:** The restore step runs in two phases. Phase 1 checks the
-marker under a per-*target* lock - keyed by the restore path, not the cache
+marker under a per-_target_ lock - keyed by the restore path, not the cache
 key, so runners restoring to their own paths never contend and steady-state
 restores stay parallel across the fleet. If the target is already current, the
-restore finishes there. Otherwise Phase 1 resolves *which* entry to serve (the
+restore finishes there. Otherwise Phase 1 resolves _which_ entry to serve (the
 exact key, or the newest `restore-keys` prefix match) and hands it to Phase 2,
-which takes the per-*key* lock on **that entry's own key** - the requested key
+which takes the per-_key_ lock on **that entry's own key** - the requested key
 for an exact hit, the resolved entry's stored key for a prefix hit - shared
 with the save step via
 [`curlewlabs-com/local-mutex`](https://github.com/curlewlabs-com/local-mutex).
@@ -107,7 +107,7 @@ Nested inside it is that same per-target lock; it then copies the resolved
 entry. Locking the entry's own key rather than merely the requested one matters
 because it is the exact lock the [`gc`](#the-gc-action) takes to evict that
 entry: on a prefix hit the two keys differ, and locking the requested key would
-leave the copy's *source* exposed to a concurrent eviction. Phase 2 restores
+leave the copy's _source_ exposed to a concurrent eviction. Phase 2 restores
 exactly the entry Phase 1 resolved - never re-resolving to a different,
 unlocked one - and misses cleanly if the gc evicted it in the interval. The
 per-target lock is what lets the gc reclaim a restore target without racing a
@@ -120,7 +120,7 @@ place. Concurrent writers of the same key are serialized through
 [`curlewlabs-com/local-mutex`](https://github.com/curlewlabs-com/local-mutex)
 (`lockf`/`flock` under the hood, kernel-managed cleanup on process death). The
 second writer waits for the first to finish, then re-checks and exits cleanly
-because the entry now exists. Saves of *different* keys still run in parallel -
+because the entry now exists. Saves of _different_ keys still run in parallel -
 the lock is per-key.
 
 **Why clean-before-restore matters:** The `rm -rf` on every re-sync (i.e.
@@ -144,8 +144,8 @@ without the shared inode - see
 **Last-use tracking (for eviction):** Every restore that serves an entry -
 including the constant-time marker-skip path - updates the modification time of
 that entry's metadata file (`.local-cache-key`). This gives each entry an
-accurate *last-used* timestamp, distinct from the entry directory's own mtime
-(which records the last *write* and is what prefix matching sorts on). Nothing
+accurate _last-used_ timestamp, distinct from the entry directory's own mtime
+(which records the last _write_ and is what prefix matching sorts on). Nothing
 here evicts anything on its own; it makes a least-recently-used sweep possible
 and safe - see [Eviction](#eviction).
 
@@ -233,7 +233,7 @@ when the cache actually missed.
   with:
     path: ${{ runner.tool_cache }}/flutter
     key: flutter-${{ steps.flutter-version.outputs.version }}-stable-${{ runner.os }}-${{ runner.arch }}
-    cache-dir: /path/to/shared/cache   # persistent path shared across runners on this machine
+    cache-dir: /path/to/shared/cache # persistent path shared across runners on this machine
 
 - name: Set up Flutter
   uses: subosito/flutter-action@v2
@@ -261,7 +261,7 @@ the filesystem supports reflinks.
 If you use the same tool in multiple workflows, a
 [local composite action](https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-composite-action)
 wrapping restore + install + save collapses it to a single `uses:` line in
-every caller. Because the install step is *inside* the composite action, the
+every caller. Because the install step is _inside_ the composite action, the
 save can be its last step - no explicit save step needed in the calling
 workflow.
 
@@ -309,27 +309,28 @@ Callers then use `uses: ./.github/actions/flutter-setup` with just
 
 `restore-keys` are tried in order. The first prefix that has any match wins;
 within that prefix's matches, the entry with the newest directory mtime - the
-most recently *saved* - is used. (A restore updates an entry's *last-used* time
+most recently _saved_ - is used. (A restore updates an entry's _last-used_ time
 on its metadata file, not the directory, so reads never reorder this selection
+
 - see [Eviction](#eviction).) A prefix match sets `cache-hit=false` so the save
-step still runs and writes a *new* entry under the caller's exact key - the
-prefix-matched entry is not updated in place, so repeated runs with a rolling
-exact key produce N separate entries over time (see [Eviction](#eviction)).
+  step still runs and writes a _new_ entry under the caller's exact key - the
+  prefix-matched entry is not updated in place, so repeated runs with a rolling
+  exact key produce N separate entries over time (see [Eviction](#eviction)).
 
 ## Inputs
 
-| Input | Required | Description |
-|-------|----------|-------------|
-| `path` | Yes | Path to restore the cached directory to |
-| `key` | Yes | Exact cache key |
-| `restore-keys` | No | Newline-separated key prefixes for fallback matching |
-| `cache-dir` | Yes | Absolute path to local cache directory (must be persistent and shared across runners; tilde expansion not supported) |
+| Input          | Required | Description                                                                                                          |
+| -------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `path`         | Yes      | Path to restore the cached directory to                                                                              |
+| `key`          | Yes      | Exact cache key                                                                                                      |
+| `restore-keys` | No       | Newline-separated key prefixes for fallback matching                                                                 |
+| `cache-dir`    | Yes      | Absolute path to local cache directory (must be persistent and shared across runners; tilde expansion not supported) |
 
 ## Outputs
 
-| Output | Description |
-|--------|-------------|
-| `cache-hit` | `true` if an exact key match was found |
+| Output              | Description                                                                                                                                                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cache-hit`         | `true` if an exact key match was found                                                                                                                                                                                                            |
 | `cache-matched-key` | Key that was actually restored (empty on miss). For exact hits this is always the original raw key; for prefix hits it is the original raw key for newly saved entries, and the legacy directory name when restoring an older pre-encoding entry. |
 
 ### Environment variables
@@ -337,21 +338,21 @@ exact key produce N separate entries over time (see [Eviction](#eviction)).
 The restore step also sets these variables via `$GITHUB_ENV` for use in
 subsequent steps:
 
-| Variable | Description |
-|----------|-------------|
-| `LOCAL_CACHE_HIT` | Same as `cache-hit` - `true` on exact match, `false` otherwise |
-| `LOCAL_CACHE_MATCHED_KEY` | Same as `cache-matched-key` |
+| Variable                  | Description                                                    |
+| ------------------------- | -------------------------------------------------------------- |
+| `LOCAL_CACHE_HIT`         | Same as `cache-hit` - `true` on exact match, `false` otherwise |
+| `LOCAL_CACHE_MATCHED_KEY` | Same as `cache-matched-key`                                    |
 
 These are a convenience for steps that cannot easily reference action outputs
 (e.g. scripts in a separate composite action).
 
 ## Save inputs
 
-| Input | Required | Description |
-|-------|----------|-------------|
-| `path` | Yes | Directory to save |
-| `key` | Yes | Cache key |
-| `cache-dir` | Yes | Must match the restore step |
+| Input       | Required | Description                 |
+| ----------- | -------- | --------------------------- |
+| `path`      | Yes      | Directory to save           |
+| `key`       | Yes      | Cache key                   |
+| `cache-dir` | Yes      | Must match the restore step |
 
 ## Upgrading from v2
 
@@ -403,15 +404,15 @@ same machine.
 
 `local-cache` never evicts on its own - a save doesn't touch sibling entries -
 so a key that encodes a rolling value (a Flutter SDK version, a `Cargo.lock`
-hash) accumulates one entry per value. What the action *does* provide is an
+hash) accumulates one entry per value. What the action _does_ provide is an
 accurate **last-used** signal, so an external sweep can reclaim space by
 genuine recency of use rather than recency of creation.
 
 Every restore that serves an entry, including the constant-time marker-skip
 path, bumps the modification time of that entry's metadata file
-(`.local-cache-key`). So that file's mtime answers *"when was this entry last
-used"*, independent of the entry directory's mtime, which answers *"when was
-this entry last written"* (and is what prefix/`restore-keys` resolution sorts
+(`.local-cache-key`). So that file's mtime answers _"when was this entry last
+used"_, independent of the entry directory's mtime, which answers _"when was
+this entry last written"_ (and is what prefix/`restore-keys` resolution sorts
 on). The two never interfere: reads move the former, writes move the latter.
 
 That makes a least-recently-used sweep safe to run on a schedule:
@@ -432,7 +433,7 @@ done
 Tune the window to your disk budget and bump cadence. Entries written by an
 older version that predate the metadata file are skipped by the loop above;
 clear those with a one-time `rm -rf cache-dir/entries/*` after upgrading, which
-forces a clean re-download on next use. This manual loop reclaims *entries*
+forces a clean re-download on next use. This manual loop reclaims _entries_
 only - not the per-runner restore-target copies or their records in the
 parallel `targets/` tree; the [`gc` action](#the-gc-action) below reclaims
 both, under the save/restore locks.
@@ -441,7 +442,7 @@ both, under the save/restore locks.
 
 `curlewlabs-com/local-cache/gc@v3` runs that sweep for you, and additionally
 reclaims the **restore targets** - the per-runner copies an entry was restored
-*to* on each cache hit, which accumulate separately from the store. Every
+_to_ on each cache hit, which accumulate separately from the store. Every
 served restore records its target in a parallel `targets/<encoded-key>/` tree
 (a sibling of `entries/`, kept out of the entry so it can't disturb
 prefix-selection order), one small file per target; when the gc evicts a cold
@@ -452,12 +453,12 @@ a sweep never races live traffic.
 ```yaml
 - uses: curlewlabs-com/local-cache/gc@v3
   with:
-    cache-dir: /path/to/cache-dir   # the same value your restore/save steps use
-    max-age-days: 30                # retention window in days - above your longest job
-    apply: true                     # omit or set false for a dry-run report
+    cache-dir: /path/to/cache-dir # the same value your restore/save steps use
+    max-age-days: 30 # retention window in days - above your longest job
+    apply: true # omit or set false for a dry-run report
 ```
 
-Because the last-used mtime is bumped by *any* runner that shares the store, a
+Because the last-used mtime is bumped by _any_ runner that shares the store, a
 cold entry proves every runner's copy is idle - so one scheduled gc reclaims
 both the store and the per-runner tool caches across all runners on the
 machine.
@@ -465,20 +466,20 @@ machine.
 **Safety is layered.** The gc holds the same per-key and per-target locks as
 save and restore, so evicting an entry can't race a save or restore of it and
 reclaiming a target can't race a restore to it. What no lock can cover is the
-window *after* a restore step - and its lock - has finished, while the job
+window _after_ a restore step - and its lock - has finished, while the job
 keeps using the restored copy for minutes: that is what `max-age-days` covers,
 so it must comfortably exceed your longest job. As further independent
 backstops the gc spares a target whose owning entry is no longer cold (a
 concurrent restore bumped it) or any target with a file modified inside the
 window (an in-progress build writes into its restored tree). The locks make
 eviction atomic; the time threshold is what makes it safe - so your longest job
-is a hard *floor*. That floor is the minimum, not the target, though:
+is a hard _floor_. That floor is the minimum, not the target, though:
 `max-age-days` is a retention policy, sized to your disk budget and how fast
 your keys roll (days to weeks; the default is 30), and it sits far above a
 longest job measured in minutes or hours. Size that window for the job's
-*total* runtime, reads included: a restore preserves the cache's original
+_total_ runtime, reads included: a restore preserves the cache's original
 mtimes and a skip rewrites nothing, so the mtime backstop only ever sees
-*writes into* a target, never a job merely reading one. And since the locks
+_writes into_ a target, never a job merely reading one. And since the locks
 live in one shared directory (`/tmp` by default), every runner sharing the
 `cache-dir` must share that lock directory too - automatic on a single machine,
 but on a topology that gives each runner a private `/tmp` the locks don't cross

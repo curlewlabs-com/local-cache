@@ -37,7 +37,6 @@ path_to_cache="${1:-}"
 cache_key="${2:-}"
 cache_dir="${3:-}"
 
-
 if [ -z "$path_to_cache" ] || [ -z "$cache_key" ] || [ -z "$cache_dir" ]; then
     printf '::error::cache-save: path, key, and cache-dir must not be empty\n'
     exit 1
@@ -77,7 +76,13 @@ tmp_entry="${entries_dir}/.tmp-${encoded_key}-$$"
 cleanup_tmp() {
     rm -rf "$tmp_entry" 2>/dev/null || true
 }
-trap cleanup_tmp EXIT INT TERM
+# A trap's own status replaces the script's, and after a `set -u` abort macOS
+# /bin/sh enters it with a stale $? of 0, so the EXIT trap fails a run that did
+# not reach RUN_COMPLETE=1 rather than reporting a save that never happened.
+RUN_COMPLETE=0
+# shellcheck disable=SC2154 # the trap body assigns _trap_rc before it reads it
+trap '_trap_rc=$?; [ "$RUN_COMPLETE" = 1 ] || [ "$_trap_rc" -ne 0 ] || _trap_rc=1; cleanup_tmp; exit "$_trap_rc"' EXIT
+trap cleanup_tmp INT TERM
 
 printf '::debug::Saving to local cache: %s\n' "$cache_key"
 # Always rsync into the store, never clone, even where restores clone
@@ -100,12 +105,13 @@ printf '::debug::Saving to local cache: %s\n' "$cache_key"
 # same path (restore -> install -> save, the canonical README pattern) doesn't
 # carry the previous entry's name into the new entry on disk.
 rsync -a --exclude="${MARKER_NAME}" "${path_to_cache}/" "${tmp_entry}/"
-printf '%s' "$cache_key" > "${tmp_entry}/${ENTRY_KEY_NAME}"
+printf '%s' "$cache_key" >"${tmp_entry}/${ENTRY_KEY_NAME}"
 mv "$tmp_entry" "${entries_dir}/${encoded_key}"
 
-elapsed=$(( $(date +%s) - start_time ))
+elapsed=$(($(date +%s) - start_time))
 size=$(du -sh "${entries_dir}/${encoded_key}" 2>/dev/null | cut -f1 || printf '?')
 file_count=$(find "${entries_dir}/${encoded_key}" -type f | wc -l | tr -d ' ')
 printf '::notice::Cache saved: %s (%s files, %s in %ds, rsync)\n' "$cache_key" "$file_count" "$size" "$elapsed"
 printf '::debug::Entry path: %s\n' "${entries_dir}/${encoded_key}"
 append_summary "- **local-cache** \`${cache_key}\` -> Saved (${size}, ${elapsed}s, rsync)"
+RUN_COMPLETE=1
