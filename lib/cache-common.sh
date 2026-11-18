@@ -51,7 +51,7 @@ encode_key() {
 
 append_summary() {
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-        printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
+        printf '%s\n' "$1" >>"$GITHUB_STEP_SUMMARY"
     fi
 }
 
@@ -69,7 +69,7 @@ gnu_can_reflink() {
     cr_dest_dev=$(stat -c %d -- "$2" 2>/dev/null) || return 1
     [ -n "$cr_src_dev" ] && [ "$cr_src_dev" = "$cr_dest_dev" ] || return 1
     cr_probe="$2/.local-cache-reflink-probe.$$"
-    printf 'local-cache reflink probe\n' > "${cr_probe}.src" 2>/dev/null || return 1
+    printf 'local-cache reflink probe\n' >"${cr_probe}.src" 2>/dev/null || return 1
     cr_rc=0
     cp --reflink=always -- "${cr_probe}.src" "${cr_probe}.dst" 2>/dev/null || cr_rc=1
     rm -f -- "${cr_probe}.src" "${cr_probe}.dst"

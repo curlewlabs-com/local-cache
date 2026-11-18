@@ -10,34 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  shellcheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Shellcheck
-        run: shellcheck -x --source-path=SCRIPTDIR lib/*.sh
-
-  # actionlint catches the inline `run:` shell blocks in this very workflow
-  # that the standalone `shellcheck` job above does not see. Without this,
-  # SC2012 / SC2015 / SC2086 issues in test fixtures slip past CI and only
-  # surface when something else (a developer's local actionlint, a code
-  # reviewer) happens to look. The download script is pinned to a commit to
-  # avoid supply-chain risk from tracking main; the release it downloads is
-  # the literal after it, which Renovate moves.
-  actionlint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Run actionlint
-        run: |
-          # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v(?<version>.+)$
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/914e7df21a07ef503a81201c76d2b11c789d3fca/scripts/download-actionlint.bash) 1.7.12
-          ./actionlint -color
-
   integration-test:
     strategy:
       matrix:
@@ -46,10 +18,9 @@ jobs:
         # different engine per leg: rsync on ubuntu-latest (ext4), macOS cp -c
         # on macos-latest (APFS), and GNU cp --reflink on a third leg that
         # mounts XFS with reflinks over /tmp.
-        # That third leg is an `include` rather than a matrix axis so
-        # the two original legs keep the job names main's required checks
-        # match on; its distinct `os` label is what makes it a new job instead
-        # of extra keys merged into the ubuntu-latest one.
+        # That third leg is an `include` rather than a matrix axis; its
+        # distinct `os` label is what makes it a new job instead of extra keys
+        # merged into the ubuntu-latest one.
         include:
           - os: ubuntu-24.04
             fs: xfs-reflink
@@ -72,7 +43,7 @@ jobs:
           persist-credentials: false
           repository: curlewlabs-com/local-mutex
           # renovate: datasource=github-tags depName=curlewlabs-com/local-mutex pin=digest
-          ref: d0778d11cf41ca3e20614fb6127f04e73961f4b7 # v2.3.0
+          ref: 2129467725051969f26a255690ab6c9232f4a51a # v2.3.2
           path: .local-mutex
 
       # Every fixture in this job lives under /tmp - sources, cache dirs,
@@ -635,6 +606,29 @@ jobs:
             || { echo "Re-check regressed: found nested staging dir inside entry"; exit 1; }
           echo "Sequential idempotent save: OK"
 
+      # A save whose copy fails must fail with the copy's status and leave
+      # nothing behind: no entry, and no staging dir, which only cache-save.sh's
+      # EXIT trap removes. A source file the runner user cannot read makes rsync
+      # exit non-zero on every leg.
+      - name: Failed save keeps its status and leaves no staging dir
+        run: |
+          . lib/cache-common.sh
+          encoded_key=$(encode_key 'failed-save-key')
+          mkdir -p /tmp/test-failed-save
+          echo "readable" > /tmp/test-failed-save/a.txt
+          echo "unreadable" > /tmp/test-failed-save/b.txt
+          chmod 000 /tmp/test-failed-save/b.txt
+          rc=0
+          sh lib/cache-save.sh /tmp/test-failed-save failed-save-key /tmp/local-cache || rc=$?
+          chmod 600 /tmp/test-failed-save/b.txt
+          [ "$rc" -ne 0 ] \
+            || { echo "Save of an unreadable source exited 0"; exit 1; }
+          [ ! -e "/tmp/local-cache/entries/${encoded_key}" ] \
+            || { echo "Failed save left an entry"; exit 1; }
+          test -z "$(find /tmp/local-cache/entries -maxdepth 1 -name ".tmp-${encoded_key}-*")" \
+            || { echo "Failed save left its staging dir"; exit 1; }
+          echo "Failed save (rc=$rc): OK"
+
       # The "v2:" prefix in these marker assertions is the canonical marker
       # version from lib/cache-restore.sh (MARKER_VERSION). If that constant
       # is ever bumped, the literals below must be bumped in lockstep.
@@ -985,11 +979,11 @@ jobs:
         run: |
           # 1. Populate the target with the exact key
           sh lib/cache-restore.sh /tmp/two-phase-dst phase-v1 /tmp/local-cache-2 ""
-          
+
           # 2. Run Phase 1 check
           out=$(mktemp)
           GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --check /tmp/two-phase-dst phase-v1 /tmp/local-cache-2 ""
-          
+
           # 3. Verify skip-lock is emitted
           grep "skip-lock=true" "$out" || (echo "Expected skip-lock=true for steady-state exact hit" && exit 1)
           echo "Phase 1 skip-lock (exact hit): OK"
@@ -998,11 +992,11 @@ jobs:
         run: |
           # 1. Populate target with phase-v1
           sh lib/cache-restore.sh /tmp/two-phase-dst-prefix phase-v1 /tmp/local-cache-2 ""
-          
+
           # 2. Run check with key phase-v2 and restore-keys phase-v1
           out=$(mktemp)
           GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --check /tmp/two-phase-dst-prefix phase-v2 /tmp/local-cache-2 "phase-"
-          
+
           # 3. Verify skip-lock is emitted (target already has the matched content)
           grep "skip-lock=true" "$out" || (echo "Expected skip-lock=true for steady-state prefix hit" && exit 1)
           echo "Phase 1 skip-lock (prefix hit): OK"
@@ -1013,7 +1007,7 @@ jobs:
           # 2. Run check with key phase-v2 and restore-keys phase-v1
           out=$(mktemp)
           GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --check /tmp/two-phase-dst-cold-prefix phase-v2 /tmp/local-cache-2 "phase-"
-          
+
           # 3. Verify skip-lock is NOT emitted (a full copy is required)
           if grep "skip-lock=true" "$out"; then
             echo "Expected no skip-lock for cold prefix hit" && exit 1
@@ -1024,7 +1018,7 @@ jobs:
         run: |
           out=$(mktemp)
           GITHUB_OUTPUT="$out" sh lib/cache-restore.sh --check /tmp/two-phase-dst-miss phase-miss /tmp/local-cache-2 ""
-          
+
           # Verify skip-lock is NOT emitted
           if grep "skip-lock=true" "$out"; then
             echo "Expected no skip-lock for miss" && exit 1
@@ -1053,13 +1047,13 @@ jobs:
           env_out=$(mktemp)
           GITHUB_OUTPUT="$out" GITHUB_ENV="$env_out" sh lib/cache-restore.sh /tmp/two-env-dst-exact phase-v1 /tmp/local-cache-2 ""
           grep "LOCAL_CACHE_HIT=true" "$env_out" || (echo "Expected LOCAL_CACHE_HIT=true for exact hit" && exit 1)
-          
+
           # 2. Prefix Hit (must be false to trigger save step)
           out=$(mktemp)
           env_out=$(mktemp)
           GITHUB_OUTPUT="$out" GITHUB_ENV="$env_out" sh lib/cache-restore.sh /tmp/two-env-dst-prefix phase-v2 /tmp/local-cache-2 "phase-"
           grep "LOCAL_CACHE_HIT=false" "$env_out" || (echo "Expected LOCAL_CACHE_HIT=false for prefix hit" && exit 1)
-          
+
           # 3. Miss
           out=$(mktemp)
           env_out=$(mktemp)
@@ -1074,7 +1068,7 @@ jobs:
           path: /tmp/two-action-dst
           key: phase-v1
           cache-dir: /tmp/local-cache-2
-      
+
       - name: Assert Action Outputs
         env:
           CACHE_HIT: ${{ steps.action-output-test.outputs.cache-hit }}
@@ -1577,7 +1571,7 @@ jobs:
           persist-credentials: false
           repository: curlewlabs-com/local-mutex
           # renovate: datasource=github-tags depName=curlewlabs-com/local-mutex pin=digest
-          ref: d0778d11cf41ca3e20614fb6127f04e73961f4b7 # v2.3.0
+          ref: 2129467725051969f26a255690ab6c9232f4a51a # v2.3.2
           path: .local-mutex
       - name: Stress - prefix-restores racing gc on a shared cache-dir
         env:
@@ -1690,4 +1684,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: curlewlabs-com/ci-baseline@c82082df9a3c5e6dab047d9ddb92f130f1537d8e # v0.1.1
+      - uses: curlewlabs-com/ci-baseline@f05f17a38ba2dfbaf0cde130a375b346e9a923a2 # v0.2.0
+
+  conclusion:
+    # The one check branch protection requires, so adding or renaming a job
+    # above needs no settings change - only this list.
+    needs: [integration-test, stress, baseline]
+    runs-on: ubuntu-24.04
+    if: always()
+    steps:
+      - name: Require every job to pass
+        env:
+          INTEGRATION_TEST: ${{ needs.integration-test.result }}
+          STRESS: ${{ needs.stress.result }}
+          BASELINE: ${{ needs.baseline.result }}
+        run: |
+          test "$INTEGRATION_TEST" = success && test "$STRESS" = success &&
+            test "$BASELINE" = success

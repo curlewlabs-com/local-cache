@@ -117,7 +117,7 @@ do_reclaim_target() {
     if [ "$GC_APPLY" = true ]; then
         rm -rf "$tpath"
     fi
-    printf 'x\n' >> "$GC_TARGETS_TALLY"
+    printf 'x\n' >>"$GC_TARGETS_TALLY"
     printf '::notice::cache-gc: %s target %s (%s)\n' "$GC_VERB" "$tpath" "$tsize"
     return 0
 }
@@ -200,15 +200,21 @@ do_evict_entry() {
     if [ "$GC_APPLY" = true ]; then
         rm -rf "$entry" "$targets_dir"
     fi
-    printf 'x\n' >> "$GC_ENTRIES_TALLY"
+    printf 'x\n' >>"$GC_ENTRIES_TALLY"
     printf '::notice::cache-gc: %s entry %s (%s, idle %sd)\n' "$GC_VERB" "$raw_key" "$entry_size" "$age_days"
     append_summary "- **local-cache gc** \`${raw_key}\` -> ${GC_SUM_VERB} (${entry_size}, idle ${age_days}d)"
     return 0
 }
 
 case "${1:-}" in
-    --__evict-entry) do_evict_entry; exit 0 ;;
-    --__reclaim-target) do_reclaim_target; exit $? ;;
+    --__evict-entry)
+        do_evict_entry
+        exit 0
+        ;;
+    --__reclaim-target)
+        do_reclaim_target
+        exit $?
+        ;;
 esac
 
 # --- main sweep (the entry point the gc action invokes) ---
@@ -305,7 +311,12 @@ GC_TARGETS_TALLY=$(mktemp)
 # Clean the tallies on ANY exit - a set -e abort in the sweep below must not leak
 # temp files on a long-lived runner. Only the main sweep reaches here; the
 # lock-held subcommands exit at the dispatch above, before this trap is armed.
-trap 'rm -f "$GC_ENTRIES_TALLY" "$GC_TARGETS_TALLY"' EXIT
+# A trap's own status replaces the script's, and after a `set -u` abort macOS
+# /bin/sh enters it with a stale $? of 0, so the trap fails a run that did not
+# reach RUN_COMPLETE=1 rather than letting the gc step pass.
+RUN_COMPLETE=0
+# shellcheck disable=SC2154 # the trap body assigns _trap_rc before it reads it
+trap '_trap_rc=$?; [ "$RUN_COMPLETE" = 1 ] || [ "$_trap_rc" -ne 0 ] || _trap_rc=1; rm -f "$GC_ENTRIES_TALLY" "$GC_TARGETS_TALLY"; exit "$_trap_rc"' EXIT
 export GC_SELF GC_CACHE_DIR GC_MAX_AGE_DAYS GC_APPLY GC_NOW GC_CUTOFF \
     GC_VERB GC_SUM_VERB GC_ENTRIES_TALLY GC_TARGETS_TALLY GC_ENTRY_NAME
 
@@ -361,10 +372,11 @@ if [ -d "$targets_root" ]; then
     done
 fi
 
-reclaimed_entries=$(wc -l < "$GC_ENTRIES_TALLY" 2>/dev/null | tr -d '[:space:]')
-reclaimed_targets=$(wc -l < "$GC_TARGETS_TALLY" 2>/dev/null | tr -d '[:space:]')
+reclaimed_entries=$(wc -l <"$GC_ENTRIES_TALLY" 2>/dev/null | tr -d '[:space:]')
+reclaimed_targets=$(wc -l <"$GC_TARGETS_TALLY" 2>/dev/null | tr -d '[:space:]')
 # tallies are removed by the EXIT trap
 
 printf '::notice::cache-gc: %s %s entr(y/ies) and %s target(s) idle >%sd\n' \
     "$verb" "$reclaimed_entries" "$reclaimed_targets" "$max_age_days"
 append_summary "- **local-cache gc** -> ${sum_verb} ${reclaimed_entries} entr(y/ies) + ${reclaimed_targets} target(s) idle >${max_age_days}d"
+RUN_COMPLETE=1

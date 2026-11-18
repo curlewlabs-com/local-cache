@@ -1,11 +1,11 @@
-name: 'Runner Local Cache (GC)'
+name: "Runner Local Cache (GC)"
 description: >-
   Evict least-recently-used cache entries and their restore targets from the
   local disk cache on self-hosted runners. Intended to run on a schedule.
-author: 'curlewlabs-com'
+author: "curlewlabs-com"
 branding:
-  icon: 'trash-2'
-  color: 'blue'
+  icon: "trash-2"
+  color: "blue"
 
 inputs:
   cache-dir:
@@ -22,16 +22,16 @@ inputs:
       time threshold, not a lock - but that floor is far below a sensible
       retention window.
     required: false
-    default: '30'
+    default: "30"
   apply:
     description: >-
       Set 'true' to actually delete. Any other value is a dry run that only
       reports what would be reclaimed.
     required: false
-    default: 'false'
+    default: "false"
 
 runs:
-  using: 'composite'
+  using: "composite"
   steps:
     # A single store-wide lock so two gc runs (e.g. a cron and a manual
     # dispatch) cannot double-process. It is also the handoff that gives
@@ -45,7 +45,7 @@ runs:
     # local-cache@v3 consumer sees deterministic behavior across reruns. See
     # AGENTS.md for the rationale.
     - name: Garbage-collect
-      uses: curlewlabs-com/local-mutex@d0778d11cf41ca3e20614fb6127f04e73961f4b7 # v2.3.0
+      uses: curlewlabs-com/local-mutex@2129467725051969f26a255690ab6c9232f4a51a # v2.3.2
       env:
         INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
         INPUT_MAX_AGE_DAYS: ${{ inputs.max-age-days }}

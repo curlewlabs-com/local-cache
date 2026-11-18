@@ -19,12 +19,11 @@ locks. A short discussion up front saves rework.
 
 ## Running the checks
 
-CI runs these on every push to `main` and every pull request against it:
-
-```sh
-shellcheck -x --source-path=SCRIPTDIR lib/*.sh
-actionlint
-```
+CI's `baseline` job runs the lint and formatting checks every Curlew Labs
+repository shares (shellcheck, shfmt, shell-trap-lint, actionlint, prettier and
+others) through the [ci-baseline](https://github.com/curlewlabs-com/ci-baseline)
+action, on every push to `main` and every pull request against it. shfmt formats
+the scripts in the style `.editorconfig` names.
 
 The integration tests are the steps of `.github/workflows/ci.yml`, and run on
 GitHub's hosted runners: on `ubuntu-latest`, where restores copy with `rsync`;

@@ -39,11 +39,11 @@ it.
 
 ### What each lock guards
 
-| Lock | Held by |
-| --- | --- |
-| `cache-save-<key>` | Save, and the restore's full copy. |
+| Lock                  | Held by                                                                        |
+| --------------------- | ------------------------------------------------------------------------------ |
+| `cache-save-<key>`    | Save, and the restore's full copy.                                             |
 | `cache-target-<path>` | The restore's quick check - and, nested inside the key lock, its full restore. |
-| `cache-gc` | The gc sweep, store-wide. |
+| `cache-gc`            | The gc sweep, store-wide.                                                      |
 
 The gc sweep re-invokes itself through local-mutex's exported
 `LOCAL_MUTEX_CLI` to take those same per-key and per-target locks, so
@@ -103,7 +103,7 @@ our CI, but a tag can still be moved to other code between two of its
 runs, and only a SHA names what runs. Renovate proposes each new
 release and moves the SHA and the comment together.
 
-This costs alerting. GitHub raises Dependabot *alerts* only for actions
+This costs alerting. GitHub raises Dependabot _alerts_ only for actions
 pinned with semantic versioning, [not for actions pinned to a
 SHA][secure-use], so a fix to one of these actions reaches this repo as
 Renovate's next update rather than as an alert.
