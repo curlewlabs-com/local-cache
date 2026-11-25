@@ -1684,7 +1684,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: curlewlabs-com/ci-baseline@775916d9645e213f5ceb13ffba27e675e547cbc3 # v0.3.6
+      - uses: curlewlabs-com/ci-baseline@e950a019827e6d8ad19e9f26f5bab4abb181a4e6 # v0.3.7
 
   conclusion:
     # The one check branch protection requires, so adding or renaming a job
